@@ -1,0 +1,24 @@
+ength * .32 + s.ambience * .05;
+        final alpha = (base + packets * (.18 + s.flowStrength * .55)) * textFade * coreFade * micFade * (k == 1 ? 1 : .55);
+        final u = s.tint(mix(.08, .62, t) + flowNoise(t * 3 + k, s.time * .3) * .05);
+        cs[i] = NexusPalette.spectral(u, alpha);
+        ws[i] = (1.1 + t * 1.9 + packets * 2.4) * (k == 1 ? 1.6 : 1) * (1 + s.flowStrength * .7);
+      }
+      _mesh.addStrand(xs, ys, ws, cs, samples);
+
+      if (k == strands ~/ 2) {
+        for (var i = 0; i < samples; i++) {
+          ws[i] = .9 + ws[i] * .12;
+          final c = cs[i];
+          final a = ((c >>> 24) * 1.35).clamp(0, 255).toInt();
+          cs[i] = (a << 24) | 0xE8F6FF;
+        }
+        _mesh.addStrand(xs, ys, ws, cs, samples);
+      }
+    }
+    _mesh.draw(canvas);
+  }
+
+  @override
+  bool shouldRepaint(EnergyConduitPainter old) => old.layout != layout;
+}

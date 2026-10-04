@@ -1,0 +1,68 @@
+import 'dart:io';
+
+import 'sandboxed_filesystem_service.dart';
+
+class MayaOmegaCodingLabService {
+  MayaOmegaCodingLabService({SandboxedFilesystemService? filesystem})
+      : filesystem = filesystem ?? SandboxedFilesystemService();
+
+  final SandboxedFilesystemService filesystem;
+
+  Future<Map<String, dynamic>> scanWorkspace() async {
+    final root = await filesystem.workspace();
+    final files = <Map<String, dynamic>>[];
+    var todoCount = 0; var fixmeCount = 0;
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      final relative = entity.path.substring(root.path.length + 1);
+      if (_isIgnored(relative)) continue;
+      final stat = await entity.stat();
+      final file = {'path': relative, 'bytes': stat.size, 'modifiedAt': stat.modified.toUtc().toIso8601String()};
+      if (_isTextFile(relative) && stat.size <= 512 * 1024) {
+        try {
+          final text = await entity.readAsString();
+          final upper = text.toUpperCase();
+          todoCount += 'TODO'.allMatches(upper).length;
+          fixmeCount += 'FIXME'.allMatches(upper).length;
+          file['lineCount'] = '\n'.allMatches(text).length + 1;
+        } catch (_) {}
+      }
+      files.add(file);
+      if (files.length >= 500) break;
+    }
+    files.sort((a, b) => a['path'].toString().compareTo(b['path'].toString()));
+    return {
+      'success': true, 'workspace': root.path,
+      'fileCount': files.length, 'todoCount': todoCount, 'fixmeCount': fixmeCount, 'files': files,
+      'execution': 'PC companion required for builds, tests, benchmarks, and deployment.',
+    };
+  }
+
+  Future<Map<String, dynamic>> checkpoint(String relativePath, {String label = 'manual'}) async {
+    final read = await filesystem.read(relativePath);
+    if (read['success'] != true) return read;
+    final safeLabel = label.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    final safePath = relativePath.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
+    final checkpointPath = '.maya_checkpoints/${DateTime.now().microsecondsSinceEpoch}_${safeLabel}_$safePath.bak';
+    return filesystem.write(checkpointPath, read['contents']?.toString() ?? '', overwrite: false);
+  }
+
+  Future<Map<String, dynamic>> patchText({
+    required String relativePath, required String oldText, required String newText, required bool confirmed,
+  }) async {
+    if (!confirmed) return {'success': false, 'confirmationRequired': true, 'error': 'Applying a code patch requires explicit confirmation.'};
+    if (oldText.isEmpty) return {'success': false, 'error': 'Patch match text is empty.'};
+    final read = await filesystem.read(relativePath);
+    if (read['success'] != true) return read;
+    final original = read['contents']?.toString() ?? '';
+    final occurrences = oldText.allMatches(original).length;
+    if (occurrences != 1) return {'success': false, 'error': 'Patch must match exactly once; found $occurrences matches.'};
+    final checkpointResult = await checkpoint(relativePath, label: 'before_patch');
+    if (checkpointResult['success'] != true) return checkpointResult;
+    final patched = original.replaceFirst(oldText, newText);
+    final write = await filesystem.write(relativePath, patched, overwrite: true);
+    return {...write, 'checkpoint': checkpointResult['path'], 'occurrences': occurrences,
+        'execution': 'Patch written and read-back verified; tests still require a PC companion.'};
+  }
+
+  Future<Map<String, dynamic>> ro
