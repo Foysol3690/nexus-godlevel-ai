@@ -1,0 +1,71 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'package:crypto/crypto.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+class MayaOmegaMeshTransportService {
+  static const _storage = FlutterSecureStorage();
+  static const _key = 'maya_omega_mesh_transport_v2';
+  static final Random _random = Random.secure();
+  static const supportedCommands = <String>{'status', 'list_files', 'read_text', 'write_text', 'flutter_analyze', 'flutter_test', 'flutter_build_apk', 'git_status', 'sha256'};
+  static const sensitiveCommands = <String>{'write_text', 'flutter_analyze', 'flutter_test', 'flutter_build_apk'};
+
+  Future<Map<String, dynamic>> beginHandshake({required String requestId, required String nodeId}) async {
+    final request = requestId.trim(); final node = nodeId.trim();
+    if (request.isEmpty || node.isEmpty) return {'success': false, 'error': 'A pairing request ID and companion node ID are required.'};
+    final state = {'requestId': request, 'nodeId': node, 'status': 'awaiting_companion_endpoint', 'startedAt': DateTime.now().toUtc().toIso8601String(), 'encrypted': false, 'transportConnected': false, 'message': 'Enter the companion HTTPS endpoint, certificate fingerprint, and one-time code to complete pairing.'};
+    await _write(state); return {'success': true, ...state};
+  }
+
+  Future<Map<String, dynamic>> connectCompanion({required String endpoint, required String certificateSha256, required String pairingCode, String deviceName = 'MAYA Android'}) async {
+    final uri = _endpoint(endpoint);
+    if (uri == null) return {'success': false, 'error': 'Use an HTTPS endpoint on a private LAN, for example https://192.168.1.20:8765.'};
+    final pin = _fingerprint(certificateSha256);
+    if (pin.length != 64) return {'success': false, 'error': 'The companion certificate SHA-256 fingerprint is invalid.'};
+    final code = pairingCode.replaceAll(RegExp(r'\D'), '');
+    if (code.length != 8) return {'success': false, 'error': 'The pairing code must have 8 digits.'};
+    final clientId = _randomHex(16);
+    final response = await _postUnsigned(uri.resolve('/pair'), pin, {'pairingCode': code, 'clientId': clientId, 'deviceName': deviceName.trim().isEmpty ? 'MAYA Android' : deviceName});
+    if (response['success'] != true) return response;
+    final token = response['token']?.toString() ?? ''; final nodeId = response['nodeId']?.toString() ?? '';
+    if (token.length < 32 || nodeId.isEmpty) return {'success': false, 'error': 'The companion returned an invalid authenticated session.'};
+    final state = <String, dynamic>{'endpoint': _origin(uri), 'certificateSha256': pin, 'clientId': clientId, 'nodeId': nodeId, 'token': token, 'status': 'connected', 'encrypted': true, 'transportConnected': true, 'pairedAt': DateTime.now().toUtc().toIso8601String(), 'lastSeenAt': DateTime.now().toUtc().toIso8601String(), 'protocol': 'maya-lan-tls-hmac-v1'};
+    await _write(state); return {'success': true, ..._publicState(state), 'message': 'Authenticated encrypted MAYA companion connected.'};
+  }
+
+  Future<Map<String, dynamic>> executeCommand({required String command, Map<String, dynamic> arguments = const {}, bool confirmed = false}) async {
+    final action = command.trim();
+    if (!supportedCommands.contains(action)) return {'success': false, 'error': 'Unsupported companion command.'};
+    if (sensitiveCommands.contains(action) && !confirmed) return {'success': false, 'confirmationRequired': true, 'error': 'Fresh confirmation is required for $action.'};
+    final state = await _read();
+    if (state['transportConnected'] != true || state['status'] != 'connected') return {'success': false, 'error': 'No MAYA companion is connected.'};
+    final origin = Uri.tryParse(state['endpoint']?.toString() ?? ''); final token = state['token']?.toString() ?? ''; final pin = state['certificateSha256']?.toString() ?? ''; final clientId = state['clientId']?.toString() ?? '';
+    if (origin == null || token.isEmpty || pin.length != 64 || clientId.isEmpty) return {'success': false, 'error': 'Companion credentials are incomplete.'};
+    final payload = {'command': action, 'arguments': _boundedArguments(arguments), 'confirmed': confirmed};
+    final response = await _postSigned(origin.resolve('/command'), pin: pin, token: token, clientId: clientId, payload: payload);
+    if (response['success'] == true) { state['lastSeenAt'] = DateTime.now().toUtc().toIso8601String(); state['lastCommand'] = action; await _write(state); }
+    return response;
+  }
+
+  Future<Map<String, dynamic>> health() => executeCommand(command: 'status');
+
+  Future<Map<String, dynamic>> resume() async {
+    final state = await _read(); final origin = Uri.tryParse(state['endpoint']?.toString() ?? ''); final token = state['token']?.toString() ?? ''; final pin = state['certificateSha256']?.toString() ?? ''; final clientId = state['clientId']?.toString() ?? '';
+    if (origin == null || token.isEmpty || pin.length != 64 || clientId.isEmpty) return {'success': false, 'error': 'No resumable companion exists.'};
+    final response = await _postSigned(origin.resolve('/command'), pin: pin, token: token, clientId: clientId, payload: const {'command': 'status', 'arguments': {}, 'confirmed': false});
+    if (response['success'] == true) { state['status'] = 'connected'; state['transportConnected'] = true; state['lastSeenAt'] = DateTime.now().toUtc().toIso8601String(); await _write(state); }
+    return response['success'] == true ? {'success': true, ..._publicState(state), 'heartbeat': response} : response;
+  }
+
+  Future<Map<String, dynamic>> status() async {
+    final state = await _read();
+    if (state.isEmpty) return {'success': true, 'status': 'not_started', 'encrypted': false, 'transportConnected': false, 'protocol': 'maya-lan-tls-hmac-v1'};
+    return {'success': true, ..._publicState(state)};
+  }
+
+  Future<Map<String, dynamic>> revoke() async {
+    final state = await _read();
+    if (state['transportConnected'] == true) { final origin = Uri.tryParse(state['endpoint']?.toString() ?? ''); if (origin != null) await _postSigned(origin.resolve('/revoke'), pin: state['certificateSha256']?.toString() ?? '', token: state['token']?.toString() ?? '', clientId: state['clientId']?.toString() ?? '', payload: const {'revoke': true}); }
+    await _storage.delete(key: _key); return {'success': true, 'status': 'revoked', 'encrypted': false, 'transportConnected': false};
+  }
