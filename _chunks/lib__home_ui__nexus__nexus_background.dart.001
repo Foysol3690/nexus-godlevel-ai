@@ -1,0 +1,50 @@
+al Paint _dustPaint = Paint()
+    ..strokeCap = StrokeCap.round
+    ..blendMode = BlendMode.plus;
+
+  static Float32List _buildSeed() {
+    final rng = math.Random(5);
+    final data = Float32List(_dustCount * 4);
+    for (var i = 0; i < data.length; i++) { data[i] = rng.nextDouble(); }
+    return data;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = state;
+    final glow = s.ambience.clamp(0.0, 1.0);
+    final orb = layout.orbCenter;
+    final R = layout.orbRadius;
+
+    _paint..blendMode = BlendMode.plus..shader = RadialGradient(colors: [s.accent.withValues(alpha: .06 + glow * .09 + s.orbEnergy * .03), s.accent.withValues(alpha: .015 + glow * .02), Colors.transparent], stops: const [0, .45, 1]).createShader(Rect.fromCircle(center: orb, radius: R * (2.6 + glow * .5)));
+    canvas.drawCircle(orb, R * (2.6 + glow * .5), _paint);
+
+    final drift = s.orbitPhase * .25;
+    final cool = Offset(size.width * (.14 + flowNoise(1.3, drift) * .05), layout.waveRect.center.dy - size.height * .06);
+    final warm = Offset(size.width * (.88 + flowNoise(4.1, drift) * .05), orb.dy + R * (.35 + flowNoise(2.2, drift) * .15));
+    _paint.shader = RadialGradient(colors: [NexusPalette.cyan.withValues(alpha: .025 + glow * .04 + s.weight(NexusPhase.listening) * .02), Colors.transparent]).createShader(Rect.fromCircle(center: cool, radius: size.width * .55));
+    canvas.drawCircle(cool, size.width * .55, _paint);
+    _paint.shader = RadialGradient(colors: [NexusPalette.orange.withValues(alpha: .018 + glow * .03 + s.weight(NexusPhase.speaking) * .02), Colors.transparent]).createShader(Rect.fromCircle(center: warm, radius: size.width * .5));
+    canvas.drawCircle(warm, size.width * .5, _paint);
+
+    final sweep = (s.orbitPhase * .035) % 1.0;
+    final band = Rect.fromLTWH(-size.width + sweep * size.width * 3, 0, size.width, size.height);
+    _paint.shader = LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Colors.transparent, Colors.white.withValues(alpha: .008 + glow * .02), Colors.transparent], stops: const [.35, .5, .65]).createShader(band);
+    canvas.drawRect(Offset.zero & size, _paint);
+    _paint.shader = null;
+
+    final travel = s.orbitPhase * .012;
+    for (var i = 0; i < _dustCount; i++) {
+      final sx = _seed[i * 4], sy = _seed[i * 4 + 1], sv = _seed[i * 4 + 2];
+      final x = (sx + travel * (.3 + sv) + flowNoise(i * .7, drift) * .01) % 1.0;
+      final y = (sy - travel * (.6 + sv * .8)) % 1.0;
+      _points[i * 2] = x * size.width;
+      _points[i * 2 + 1] = y * size.height;
+    }
+    _dustPaint..strokeWidth = 1.3..color = const Color(0xFF9FC4FF).withValues(alpha: .1 + glow * .18 + s.particleEnergy * .1);
+    canvas.drawRawPoints(ui.PointMode.points, _points, _dustPaint);
+  }
+
+  @override
+  bool shouldRepaint(_AtmospherePainter old) => old.layout != layout;
+}

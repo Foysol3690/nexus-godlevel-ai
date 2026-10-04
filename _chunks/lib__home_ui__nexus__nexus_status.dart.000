@@ -1,0 +1,88 @@
+import 'package:flutter/material.dart';
+
+import 'audio_visual_state.dart';
+import 'nexus_glass_layer.dart';
+import 'nexus_palette.dart';
+import 'nexus_state_controller.dart';
+
+class NexusStatusBar extends StatelessWidget {
+  const NexusStatusBar({super.key, required this.phase, required this.connected, required this.overlayActive, required this.qualityTier, required this.onOverlayTap, required this.onGodModeTap, required this.onVisionTap});
+
+  final NexusStateController phase;
+  final bool connected, overlayActive;
+  final ValueNotifier<int> qualityTier;
+  final VoidCallback onOverlayTap, onGodModeTap, onVisionTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        _GlassIconButton(icon: Icons.bolt_outlined, label: 'God mode', qualityTier: qualityTier, onTap: onGodModeTap),
+        Expanded(child: Center(child: ListenableBuilder(listenable: phase, builder: (context, _) => _StatusPill(label: _label(phase.phase), connected: connected, qualityTier: qualityTier, onTap: onOverlayTap)))),
+        _GlassIconButton(icon: Icons.visibility_outlined, label: 'Vision', qualityTier: qualityTier, onTap: onVisionTap),
+      ],
+    );
+  }
+
+  String _label(NexusPhase p) => p == NexusPhase.idle ? (overlayActive ? 'ORB ONLINE' : 'ORB STANDBY') : NexusStateController.titleFor(p);
+}
+
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.label, required this.connected, required this.qualityTier, required this.onTap});
+  final String label; final bool connected; final ValueNotifier<int> qualityTier; final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final dot = connected ? NexusPalette.cyan : const Color(0xFFFF4D72);
+    return Semantics(
+      button: true, label: 'System orb. $label. ${connected ? 'Online' : 'Offline'}', excludeSemantics: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque, onTap: onTap,
+        child: NexusGlass(
+          borderRadius: 20, qualityTier: qualityTier,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              DecoratedBox(decoration: BoxDecoration(color: dot, shape: BoxShape.circle, boxShadow: [BoxShadow(color: dot.withValues(alpha: .7), blurRadius: 8)]), child: const SizedBox.square(dimension: 6)),
+              const SizedBox(width: 10),
+              AnimatedSwitcher(duration: const Duration(milliseconds: 380), switchInCurve: Curves.easeOutCubic, switchOutCurve: Curves.easeInCubic, child: Text(label, key: ValueKey(label), style: TextStyle(color: NexusPalette.text.withValues(alpha: .86), fontFamily: 'MayaMono', fontSize: 10.5, letterSpacing: 3))),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GlassIconButton extends StatelessWidget {
+  const _GlassIconButton({required this.icon, required this.label, required this.qualityTier, required this.onTap});
+  final IconData icon; final String label; final ValueNotifier<int> qualityTier; final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(button: true, label: label, excludeSemantics: true, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: onTap, child: SizedBox.square(dimension: 44, child: NexusGlass(circle: true, blur: 10, qualityTier: qualityTier, child: Icon(icon, size: 18, color: NexusPalette.text.withValues(alpha: .62))))));
+  }
+}
+
+class NexusReadout extends StatelessWidget {
+  const NexusReadout({super.key, required this.phase, required this.statusText});
+  final NexusStateController phase; final String statusText;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: phase,
+      builder: (context, _) {
+        final p = phase.phase;
+        final title = NexusStateController.titleFor(p);
+        final subtitle = p == NexusPhase.idle ? 'TAP THE CORE OR SAY "MAYA"' : statusText;
+        return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          AnimatedSwitcher(duration: const Duration(milliseconds: 460), switchInCurve: Curves.easeOutCubic, switchOutCurve: Curves.easeInCubic, transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: SlideTransition(position: Tween(begin: const Offset(0, .18), end: Offset.zero).animate(animation), child: child)),
+            child: ShaderMask(key: ValueKey(title), shaderCallback: (bounds) => const LinearGradient(colors: [NexusPalette.cyan, Color(0xFFEDEBFF), NexusPalette.orange]).createShader(bounds), child: Text(title, textAlign: TextAlign.center, maxLines: 1, style: const TextStyle(color: Colors.white, fontFamily: 'MayaSans', fontSize: 21, fontWeight: FontWeight.w400, letterSpacing: 7)))),
+          const SizedBox(height: 9),
+          AnimatedSwitcher(duration: const Duration(milliseconds: 360), child: Text(subtitle, key: ValueKey(subtitle), maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: TextStyle(color: NexusPalette.text.withValues(alpha: .55), fontFamily: 'MayaMono', fontSize: 9.5, letterSpacing: p == NexusPhase.idle ? 2.6 : 1, height: 1.45))),
+        ]);
+      },
+    );
+  }
+}

@@ -1,0 +1,83 @@
+import 'omega_architecture_service.dart';
+import 'omega_agent_protocol_service.dart';
+import 'omega_verification_service.dart';
+
+typedef MayaOmegaStageRunner = Future<Map<String, dynamic>> Function(Map<String, dynamic> node);
+
+class MayaOmegaTaskExecutorService {
+  MayaOmegaTaskExecutorService({MayaOmegaArchitectureService? architecture, MayaOmegaVerificationService? verifier, MayaOmegaAgentProtocolService? agentProtocol})
+      : architecture = architecture ?? MayaOmegaArchitectureService(),
+        verifier = verifier ?? const MayaOmegaVerificationService(),
+        agentProtocol = agentProtocol ?? MayaOmegaAgentProtocolService();
+
+  final MayaOmegaArchitectureService architecture;
+  final MayaOmegaVerificationService verifier;
+  final MayaOmegaAgentProtocolService agentProtocol;
+
+  Future<Map<String, dynamic>> run({required String taskId, required MayaOmegaStageRunner runner}) async {
+    final graph = await architecture.activeTaskGraph();
+    if (graph == null || graph['id']?.toString() != taskId) return {'success': false, 'error': 'Task graph not found.'};
+    final rawNodes = graph['nodes'];
+    if (rawNodes is! List) return {'success': false, 'error': 'Task graph has no executable nodes.'};
+    final nodes = rawNodes.whereType<Map>().map((node) => node.map((key, value) => MapEntry(key.toString(), value))).toList();
+    final outputs = <Map<String, dynamic>>[];
+
+    while (true) {
+      final pending = nodes.where((node) { final status = node['status']?.toString() ?? 'pending'; return status == 'pending' || status == 'running'; }).toList();
+      if (pending.isEmpty) break;
+      final ready = pending.where((node) {
+        final dependencies = node['dependsOn'] is List ? (node['dependsOn'] as List).map((item) => item.toString()) : const <String>[];
+        return dependencies.every((dependency) {
+          final dependencyNode = nodes.firstWhere((candidate) => candidate['id']?.toString() == dependency, orElse: () => <String, dynamic>{'status': 'failed'});
+          return dependencyNode['status'] == 'completed';
+        });
+      }).toList();
+      if (ready.isEmpty) {
+        await architecture.recordLesson(type: 'task_dependency_deadlock', summary: 'Task graph $taskId has no ready node.', recovered: false, strategy: 'Inspect dependencies and restart with a smaller graph.');
+        return {'success': false, 'taskId': taskId, 'error': 'Task graph dependency deadlock.', 'outputs': outputs};
+      }
+      for (final node in ready) {
+        final nodeId = node['id']?.toString() ?? '';
+        final retryLimit = (node['retryLimit'] as num?)?.toInt() ?? 1;
+        Map<String, dynamic> result = {'success': false, 'error': 'Stage did not run.'};
+        var attempt = 0;
+        await architecture.advanceTaskNode(taskId, nodeId, MayaOmegaTaskStatus.running);
+        while (attempt <= retryLimit) {
+          attempt++;
+          try { result = await runner(node); } catch (error) { result = {'success': false, 'error': error.toString()}; }
+          final verification = verifier.verifyToolResult(result, expected: node['expectedState']?.toString() ?? '');
+          if (result['success'] == true && verification['verified'] == true) {
+            node['status'] = MayaOmegaTaskStatus.completed.name;
+            node['output'] = result['output']?.toString() ?? result['message']?.toString() ?? verification['reason'];
+            await architecture.advanceTaskNode(taskId, nodeId, MayaOmegaTaskStatus.completed, output: node['output'].toString());
+            outputs.add({'nodeId': nodeId, 'attempts': attempt, ...result, 'verification': verification});
+            await agentProtocol.send(MayaOmegaAgentMessage(taskId: taskId, agentId: _agentForNode(nodeId), objective: node['objective']?.toString() ?? '', inputs: node, outputs: result, confidence: verification['confidence']?.toString() ?? 'unknown', evidence: [verification], errors: const <String>[], artifacts: const <String>[], timestamp: DateTime.now().toUtc()));
+            break;
+          }
+          node['status'] = MayaOmegaTaskStatus.pending.name; node['attempts'] = attempt; node['error'] = result['error']?.toString() ?? verification['reason'];
+          if (attempt > retryLimit) {
+            await architecture.advanceTaskNode(taskId, nodeId, MayaOmegaTaskStatus.failed, error: node['error'].toString());
+            await architecture.recordLesson(type: 'task_stage_failure', summary: 'Task stage "$nodeId" failed after $attempt attempt(s).', recovered: false, strategy: node['recoveryAction']?.toString() ?? 'Use a bounded fallback and verify again.');
+            await agentProtocol.send(MayaOmegaAgentMessage(taskId: taskId, agentId: _agentForNode(nodeId), objective: node['objective']?.toString() ?? '', inputs: node, outputs: result, confidence: 'conflicting', evidence: [verification], errors: [node['error'].toString()], artifacts: const <String>[], timestamp: DateTime.now().toUtc()));
+            return {'success': false, 'taskId': taskId, 'failedNode': nodeId, 'attempts': attempt, 'error': node['error'], 'outputs': outputs};
+          }
+        }
+      }
+    }
+    graph['nodes'] = nodes;
+    final verification = verifier.verifyTaskGraph(graph);
+    await architecture.updateTaskGraphStatus(taskId, verification['verified'] == true ? MayaOmegaTaskStatus.completed : MayaOmegaTaskStatus.failed, message: verification['reason']?.toString() ?? '');
+    return {'success': verification['verified'] == true, 'taskId': taskId, 'outputs': outputs, 'verification': verification};
+  }
+
+  static String _agentForNode(String nodeId) {
+    switch (nodeId) {
+      case 'perceive': return 'maya_prime';
+      case 'understand': case 'plan': return 'planner';
+      case 'execute': return 'maya_prime';
+      case 'verify': return 'verifier';
+      case 'reflect': return 'critic';
+      default: return 'maya_prime';
+    }
+  }
+}

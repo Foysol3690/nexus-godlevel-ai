@@ -1,0 +1,98 @@
+import 'dart:convert';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+typedef NexusAgentRunner = Future<String> Function(String role, String prompt);
+
+class NexusMissionService {
+  static const _storage = FlutterSecureStorage();
+  static const _key = 'maya_nexus_missions_v1';
+  static const _maxMissions = 30;
+
+  Future<Map<String, dynamic>> create(String goal) async {
+    final clean = goal.trim();
+    if (clean.isEmpty) return {'success': false, 'error': 'Mission goal is empty.'};
+    final missions = await _read();
+    final id = DateTime.now().microsecondsSinceEpoch.toString();
+    final mission = <String, dynamic>{
+      'id': id, 'goal': clean, 'status': 'planned',
+      'createdAt': DateTime.now().toUtc().toIso8601String(),
+      'steps': [
+        _step('researcher', 'Research requirements, constraints, risks and missing facts.'),
+        _step('planner', 'Create an ordered implementation plan with measurable completion criteria.'),
+        _step('builder', 'Produce the best concrete deliverable possible using available information and clearly state tool dependencies.'),
+        _step('critic', 'Find errors, unsupported claims, security problems and missing requirements.'),
+        _step('verifier', 'Correct the work, verify it against the mission goal and give an evidence-based final result.'),
+      ],
+      'finalResult': '',
+    };
+    missions.insert(0, mission);
+    if (missions.length > _maxMissions) missions.removeRange(_maxMissions, missions.length);
+    await _write(missions);
+    return {'success': true, 'missionId': id, 'goal': clean, 'agentCount': 5, 'status': 'planned'};
+  }
+
+  Future<Map<String, dynamic>> list() async {
+    final missions = await _read();
+    return {'success': true, 'missions': missions.map((mission) => {'id': mission['id'], 'goal': mission['goal'], 'status': mission['status'], 'createdAt': mission['createdAt'], 'completedSteps': (mission['steps'] as List? ?? const []).whereType<Map>().where((step) => step['status'] == 'completed').length, 'totalSteps': (mission['steps'] as List? ?? const []).length}).toList()};
+  }
+
+  Future<Map<String, dynamic>> run({required String missionId, required NexusAgentRunner agentRunner}) async {
+    final missions = await _read();
+    final index = missions.indexWhere((mission) => mission['id']?.toString() == missionId);
+    if (index < 0) return {'success': false, 'error': 'Mission not found.'};
+    final mission = missions[index];
+    final goal = mission['goal']?.toString() ?? '';
+    final rawSteps = mission['steps'] as List? ?? const [];
+    final steps = rawSteps.whereType<Map>().map((step) => step.map((key, value) => MapEntry(key.toString(), value))).toList();
+    mission['steps'] = steps; mission['status'] = 'running';
+    await _write(missions);
+
+    final completedOutputs = <String>[];
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+      final existing = step['output']?.toString() ?? '';
+      if (step['status'] == 'completed' && existing.isNotEmpty) { completedOutputs.add(existing); continue; }
+      final role = step['role']?.toString() ?? 'specialist';
+      final task = step['task']?.toString() ?? '';
+      step['status'] = 'running'; await _write(missions);
+      try {
+        final context = completedOutputs.isEmpty ? 'No previous specialist output.' : completedOutputs.asMap().entries.map((entry) => 'Previous stage ${entry.key + 1}: ${entry.value}').join('\n\n');
+        final output = (await agentRunner(role, 'MISSION GOAL:\n$goal\n\nYOUR STAGE:\n$task\n\n$context\n\nReturn concrete, verifiable work. Do not claim unavailable tools or completed external actions.')).trim();
+        if (output.isEmpty) throw StateError('$role returned an empty result');
+        final bounded = output.length > 6000 ? output.substring(0, 6000) : output;
+        step['output'] = bounded; step['status'] = 'completed'; step['completedAt'] = DateTime.now().toUtc().toIso8601String();
+        completedOutputs.add(bounded);
+      } catch (error) {
+        step['status'] = 'failed'; step['error'] = error.toString(); mission['status'] = 'failed'; mission['failedStep'] = i + 1;
+        await _write(missions);
+        return {'success': false, 'missionId': missionId, 'status': 'failed', 'failedStep': i + 1, 'role': role, 'error': error.toString()};
+      }
+      await _write(missions);
+    }
+    mission['status'] = 'completed'; mission['completedAt'] = DateTime.now().toUtc().toIso8601String(); mission['finalResult'] = completedOutputs.isEmpty ? '' : completedOutputs.last;
+    await _write(missions);
+    return {'success': true, 'missionId': missionId, 'status': 'completed', 'finalResult': mission['finalResult'], 'stages': steps.map((step) => {'role': step['role'], 'status': step['status']}).toList()};
+  }
+
+  Future<Map<String, dynamic>> cancel(String missionId) async {
+    final missions = await _read();
+    final index = missions.indexWhere((mission) => mission['id']?.toString() == missionId);
+    if (index < 0) return {'success': false, 'error': 'Mission not found.'};
+    missions[index]['status'] = 'cancelled'; missions[index]['cancelledAt'] = DateTime.now().toUtc().toIso8601String();
+    await _write(missions);
+    return {'success': true, 'missionId': missionId, 'status': 'cancelled'};
+  }
+
+  static Map<String, dynamic> _step(String role, String task) => {'role': role, 'task': task, 'status': 'pending', 'output': ''};
+
+  Future<List<Map<String, dynamic>>> _read() async {
+    final raw = await _storage.read(key: _key);
+    if (raw == null || raw.isEmpty) return [];
+    try { final decoded = jsonDecode(raw); if (decoded is List) return decoded.whereType<Map>().map((item) => item.map((key, value) => MapEntry(key.toString(), value))).toList(); } catch (_) {}
+    return [];
+  }
+
+  Future<void> _write(List<Map<String, dynamic>> missions) =>
+      _storage.write(key: _key, value: jsonEncode(missions));
+}
