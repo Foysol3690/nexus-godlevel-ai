@@ -23,7 +23,6 @@ dependencies:
   timezone: ^0.9.4
   intl: ^0.19.0
   record: any
-  # GOD-MODE NEW
   flutter_secure_storage: ^9.0.0
   connectivity_plus: ^7.3.1
 dev_dependencies:
@@ -33,22 +32,6 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/audio/maya_boot.wav
-    - assets/audio/maya_v10_boot.wav
-    - assets/audio/maya_v10_listen.wav
-    - assets/audio/maya_v10_process.wav
-    - assets/audio/maya_v10_speak.wav
-    - assets/plans/MAYA_SOFTWARE_FACTORY_MASTER_PLAN.txt
-    - assets/images/orb.png
-    - assets/images/waves.png
-  fonts:
-    - family: MayaSans
-      fonts:
-        - asset: assets/fonts/MayaSans-Regular.ttf
-        - asset: assets/fonts/MayaSans-Bold.ttf
-          weight: 700
-    - family: MayaMono
-      fonts:
-        - asset: assets/fonts/MayaMono-Regular.ttf
-        - asset: assets/fonts/MayaMono-Bold.ttf
-          weight: 700
+    - assets/audio/
+    - assets/images/
+    - assets/plans/
