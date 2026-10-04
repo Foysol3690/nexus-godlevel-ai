@@ -1,0 +1,78 @@
+      if (dir.abs() > .12) {
+        sT[i] += dt * dir * sSpeed[i] * flowSpeed;
+      } else {
+        sT[i] += dt * flowNoise(i * .9, s.time * .4) * .03;
+      }
+      sLife[i] += dt * sLifeRate[i];
+      if (sT[i] > 1 || sT[i] < 0 || sLife[i] >= 1) _spawnStream(i, dir);
+    }
+  }
+}
+
+class ParticleFieldPainter extends CustomPainter {
+  ParticleFieldPainter({required this.field, required this.state, required this.layout, required this.layer, required Listenable repaint}) : super(repaint: repaint);
+  final ParticleField field; final AudioVisualState state; final NexusLayout layout; final NexusDepthLayer layer;
+  static const int _maxDots = ParticleField.maxOrbit + ParticleField.maxStream;
+  static final Float32List _positions = Float32List(_maxDots * 5 * 2);
+  static final Int32List _colors = Int32List(_maxDots * 5);
+  static final Uint16List _indices = Uint16List(_maxDots * 12);
+  static final ui.Paint _additive = ui.Paint()..blendMode = ui.BlendMode.plus;
+  int _v = 0, _ix = 0;
+
+  void _dot(double x, double y, double radius, int argb) {
+    if ((argb >>> 24) < 3) return;
+    final base = _v; final p = base * 2; final edge = argb & 0x00FFFFFF;
+    _positions[p] = x; _positions[p + 1] = y; _positions[p + 2] = x - radius; _positions[p + 3] = y; _positions[p + 4] = x; _positions[p + 5] = y - radius; _positions[p + 6] = x + radius; _positions[p + 7] = y; _positions[p + 8] = x; _positions[p + 9] = y + radius;
+    _colors[base] = argb; _colors[base + 1] = edge; _colors[base + 2] = edge; _colors[base + 3] = edge; _colors[base + 4] = edge;
+    for (var k = 0; k < 4; k++) { _indices[_ix++] = base; _indices[_ix++] = base + 1 + k; _indices[_ix++] = base + 1 + (k + 1) % 4; }
+    _v += 5;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    _v = 0; _ix = 0;
+    final s = state; final f = field; final cx = layout.orbCenter.dx; final cy = layout.orbCenter.dy; final R = layout.orbRadius;
+    final scale = (R / 120).clamp(.7, 1.4); final front = layer == NexusDepthLayer.front; final energy = s.particleEnergy.clamp(0.0, 1.0);
+    for (var i = 0; i < f.orbitCount; i++) {
+      final r = f.oRadius[i]; final th = f.oTheta[i];
+      final x0 = r * math.cos(th); final y0 = r * math.sin(th) * math.cos(f.oIncl[i]); final z = r * math.sin(th) * math.sin(f.oIncl[i]);
+      if ((z >= 0) != front) continue;
+      final cn = math.cos(f.oNode[i]), sn = math.sin(f.oNode[i]);
+      final x = x0 * cn - y0 * sn; final y = x0 * sn + y0 * cn;
+      final perspective = 1 / (1 - z * .16); final px = cx + x * R * perspective; final py = cy + y * R * perspective * .94;
+      final life = math.sin(math.pi * f.oLife[i]); final depth = front ? 1.0 : .55;
+      final spark = f.oSpark[i] * s.treble;
+      final alpha = life * depth * (.18 + .62 * energy + spark * .5);
+      final u = s.tint(NexusPalette.angleToSpectrum(math.atan2(y, x)));
+      final radius = f.oSize[i] * scale * perspective * (1.6 + energy * 1.4 + spark * 2.2);
+      _dot(px, py, radius, NexusPalette.spectral(u, alpha));
+    }
+    final visibility = smoothstep(.04, .3, s.flowStrength);
+    if (visibility > .01) {
+      final spread = layout.size.width * .36;
+      final textMid = (layout.textTop + layout.textBottom) / 2;
+      final textHalf = (layout.textBottom - layout.textTop) / 2 + 8;
+      final strands = <double, ConduitGeometry>{};
+      for (var i = 0; i < f.streamCount; i++) {
+        final t = f.sT[i]; if ((t > .9) == front) continue;
+        final strand = f.sStrand[i];
+        final geometry = strands[strand] ??= ConduitGeometry(layout, s, strand: strand);
+        final p = geometry.at(t); final n = geometry.normalAt(t);
+        final lateral = f.sLateral[i] * (spread * math.pow(1 - t, 5) + 5 + s.flowStrength * 6);
+        final x = p.dx + n.dx * lateral; final y = p.dy + n.dy * lateral;
+        final textFade = 1 - .85 * (1 - smoothstep(0, textHalf, (y - textMid).abs()));
+        final life = math.sin(math.pi * f.sLife[i]);
+        final alpha = visibility * life * textFade * (.35 + s.flowStrength * .65);
+        final u = s.tint(mix(.08, .62, t));
+        final radius = f.sSize[i] * scale * (1.5 + s.flowStrength * 1.8 + s.treble * 1.2);
+        _dot(x, y, radius, NexusPalette.spectral(u, alpha));
+      }
+    }
+    if (_ix == 0) return;
+    final vertices = ui.Vertices.raw(ui.VertexMode.triangles, Float32List.sublistView(_positions, 0, _v * 2), colors: Int32List.sublistView(_colors, 0, _v), indices: Uint16List.sublistView(_indices, 0, _ix));
+    canvas.drawVertices(vertices, ui.BlendMode.dst, _additive);
+    vertices.dispose();
+  }
+  @override
+  bool shouldRepaint(ParticleFieldPainter old) => old.layout != layout || old.layer != layer;
+}
