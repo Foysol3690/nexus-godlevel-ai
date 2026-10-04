@@ -93,7 +93,8 @@ class EmotionEngineService extends ChangeNotifier {
 
   EmotionVector? smoothedEmotion(int windowSize) {
     if (_emotionHistory.isEmpty) return null;
-    final window = _emotionHistory.takeLast(math.min(windowSize, _emotionHistory.length));
+    final count = math.min(windowSize, _emotionHistory.length);
+    final window = _emotionHistory.sublist(_emotionHistory.length - count);
     final avgV = window.map((e) => e.valence).fold(0.0, (a, b) => a + b) / window.length;
     final avgA = window.map((e) => e.arousal).fold(0.0, (a, b) => a + b) / window.length;
     final avgD = window.map((e) => e.dominance).fold(0.0, (a, b) => a + b) / window.length;
@@ -101,8 +102,4 @@ class EmotionEngineService extends ChangeNotifier {
   }
 
   void reset() { _emotionHistory.clear(); _currentEmotion = null; notifyListeners(); }
-}
-
-extension ListTakeLastEmotion<T> on List<T> {
-  List<T> takeLast(int n) => length <= n ? this : sublist(length - n);
 }

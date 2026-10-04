@@ -21,7 +21,7 @@ class _GodLevelDashboardV2State extends State<GodLevelDashboardV2> with SingleTi
   final _ai = GodLevelAIService(), _agent = AutoAgentService(), _emotion = EmotionEngineService();
   late final AnimationController _pulse;
   Timer? _statTimer;
-  int _uptimeSeconds = 0, _selectedTab = 0;
+  int _uptimeSeconds = 0;
 
   @override
   void initState() {
@@ -97,7 +97,26 @@ class _GodLevelDashboardV2State extends State<GodLevelDashboardV2> with SingleTi
   Widget _recentConversations() { if (_ai.conversation.isEmpty) return const SizedBox.shrink(); final recent = _ai.conversation.reversed.take(6).toList(); return Padding(padding: const EdgeInsets.fromLTRB(16, 20, 16, 0), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [_sectionHeader('RECENT MESSAGES', _cyan), const SizedBox(height: 12), ...recent.map((msg) => _recentMsgTile(msg))])); }
   Widget _recentMsgTile(ConversationMessage msg) { final isUser = msg.role == 'user'; return GestureDetector(onTap: _openGodChat, child: Container(margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(12), decoration: BoxDecoration(borderRadius: BorderRadius.circular(10), color: Colors.white.withOpacity(0.04), border: Border.all(color: Colors.white.withOpacity(0.06))), child: Row(children: [Icon(isUser ? Icons.person_outline : Icons.auto_awesome, size: 14, color: isUser ? Colors.white38 : _cyan), const SizedBox(width: 8), Expanded(child: Text(msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content, style: TextStyle(color: isUser ? Colors.white60 : Colors.white70, fontSize: 12))), const Icon(Icons.chevron_right, size: 14, color: Colors.white24)]))); }
 
-  Widget _emotionTimeline() { final history = _emotion.emotionHistory.takeLast(20); if (history.isEmpty) return const SizedBox.shrink(); return Padding(padding: const EdgeInsets.fromLTRB(16, 20, 16, 0), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [_sectionHeader('EMOTION TIMELINE', _orange), const SizedBox(height: 12), SizedBox(height: 60, child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: history.map((e) { final height = ((e.valence + 1) / 2 * 50 + 10).clamp(10.0, 60.0); final color = e.valence > 0.2 ? _green : e.valence < -0.2 ? const Color(0xFFFF3CAC) : Colors.white24; return Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 1), child: Tooltip(message: e.primaryLabel, child: AnimatedContainer(duration: const Duration(milliseconds: 300), height: height, decoration: BoxDecoration(borderRadius: BorderRadius.circular(3), color: color.withOpacity(0.7)))))); }).toList())), const SizedBox(height: 6), Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text('Negative', style: TextStyle(color: _pink.withOpacity(0.6), fontSize: 10)), const Text('Emotion Valence', style: TextStyle(color: Colors.white24, fontSize: 10)), Text('Positive', style: TextStyle(color: _green.withOpacity(0.6), fontSize: 10))])])); }
+  Widget _emotionTimeline() {
+    // Use direct sublist to avoid ambiguous takeLast extension conflict
+    final allHistory = _emotion.emotionHistory;
+    final history = allHistory.length > 20 ? allHistory.sublist(allHistory.length - 20) : allHistory;
+    if (history.isEmpty) return const SizedBox.shrink();
+    return Padding(padding: const EdgeInsets.fromLTRB(16, 20, 16, 0), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _sectionHeader('EMOTION TIMELINE', _orange), const SizedBox(height: 12),
+      SizedBox(height: 60, child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: history.map((e) {
+        final height = ((e.valence + 1) / 2 * 50 + 10).clamp(10.0, 60.0);
+        final color = e.valence > 0.2 ? _green : e.valence < -0.2 ? const Color(0xFFFF3CAC) : Colors.white24;
+        return Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 1), child: Tooltip(message: e.primaryLabel, child: AnimatedContainer(duration: const Duration(milliseconds: 300), height: height, decoration: BoxDecoration(borderRadius: BorderRadius.circular(3), color: color.withOpacity(0.7))))));
+      }).toList())),
+      const SizedBox(height: 6),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Text('Negative', style: TextStyle(color: _pink.withOpacity(0.6), fontSize: 10)),
+        const Text('Emotion Valence', style: TextStyle(color: Colors.white24, fontSize: 10)),
+        Text('Positive', style: TextStyle(color: _green.withOpacity(0.6), fontSize: 10)),
+      ]),
+    ]));
+  }
 
   Widget _godLevelChatFab() => FloatingActionButton.extended(onPressed: _openGodChat, backgroundColor: const Color(0xFF0D1629), elevation: 8, icon: ShaderMask(shaderCallback: (b) => const LinearGradient(colors: [Color(0xFF00D9FF), Color(0xFFAA00FF)]).createShader(b), child: const Icon(Icons.auto_awesome, color: Colors.white)), label: ShaderMask(shaderCallback: (b) => const LinearGradient(colors: [Color(0xFF00D9FF), Color(0xFFAA00FF)]).createShader(b), child: const Text('GOD CHAT', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, letterSpacing: 1))));
   Widget _sectionHeader(String title, Color color) => Row(children: [Container(width: 3, height: 14, color: color, margin: const EdgeInsets.only(right: 8)), Text(title, style: TextStyle(color: color.withOpacity(0.9), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5))]);
@@ -117,4 +136,3 @@ class _GodLevelDashboardV2State extends State<GodLevelDashboardV2> with SingleTi
 
 class _ModelEntry { final String icon, name; final GodLevelModel model; final Color color; const _ModelEntry(this.icon, this.name, this.model, this.color); }
 class _CapChip extends StatelessWidget { final String label; const _CapChip(this.label); @override Widget build(BuildContext context) => Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5), decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), color: Colors.white.withOpacity(0.06), border: Border.all(color: Colors.white12)), child: Text(label, style: const TextStyle(color: Colors.white60, fontSize: 11))); }
-extension ListTakeLastDash<T> on List<T> { List<T> takeLast(int n) => length <= n ? this : sublist(length - n); }
