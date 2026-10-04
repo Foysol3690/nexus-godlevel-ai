@@ -1,0 +1,110 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'services/god_level_ai_service.dart';
+import 'services/emotion_engine_service.dart';
+import 'services/auto_agent_service.dart';
+
+class GodLevelChatPanel extends StatefulWidget {
+  const GodLevelChatPanel({super.key});
+  @override State<GodLevelChatPanel> createState() => _GodLevelChatPanelState();
+}
+
+class _GodLevelChatPanelState extends State<GodLevelChatPanel> with SingleTickerProviderStateMixin {
+  static const _bg = Color(0xFF02040A), _surface = Color(0xFF090C18), _cyan = Color(0xFF00D9FF), _violet = Color(0xFFAA00FF), _pink = Color(0xFFFF3CAC), _green = Color(0xFF00FF87);
+  final _ai = GodLevelAIService(), _emotion = EmotionEngineService(), _agent = AutoAgentService();
+  final _ctrl = TextEditingController(), _scroll = ScrollController();
+  late final AnimationController _ambient;
+  bool _showThinking = false, _showAgentPanel = false;
+
+  @override
+  void initState() { super.initState(); _ambient = AnimationController(vsync: this, duration: const Duration(seconds: 6))..repeat(); _ai.addListener(_onAiChanged); _agent.addListener(_onAgentChanged); }
+  void _onAiChanged() { if (mounted) setState(() {}); if (_ai.conversation.isNotEmpty) _scrollToBottom(); }
+  void _onAgentChanged() { if (mounted) setState(() {}); }
+  void _scrollToBottom() { WidgetsBinding.instance.addPostFrameCallback((_) { if (_scroll.hasClients) { _scroll.animateTo(_scroll.position.maxScrollExtent, duration: const Duration(milliseconds: 300), curve: Curves.easeOut); } }); }
+
+  Future<void> _send() async {
+    final text = _ctrl.text.trim(); if (text.isEmpty || _ai.isThinking) return;
+    _ctrl.clear(); _emotion.analyseText(text);
+    final mode = _ai.reasoningMode;
+    if (mode == ReasoningMode.autonomous) { _showAgentPanel = true; try { await _agent.executeGoal(text); } catch (_) {} } else { await _ai.chat(text, mode: mode); }
+  }
+
+  @override
+  void dispose() { _ambient.dispose(); _ai.removeListener(_onAiChanged); _agent.removeListener(_onAgentChanged); _ctrl.dispose(); _scroll.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(backgroundColor: _bg, appBar: _buildAppBar(), body: Column(children: [
+      _modeSelector(),
+      if (_showThinking && _ai.liveThinking.isNotEmpty) _thinkingPanel(),
+      if (_showAgentPanel && _agent.currentPlan != null) _agentPanel(),
+      Expanded(child: _messageList()),
+      if (_ai.isStreaming) _streamingIndicator(),
+      _inputBar(),
+    ]));
+  }
+
+  AppBar _buildAppBar() => AppBar(backgroundColor: _surface, elevation: 0, leading: IconButton(icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white70), onPressed: () => Navigator.of(context).pop()), title: Row(children: [_glowDot(_ai.isThinking ? _cyan : _green, _ai.isThinking), const SizedBox(width: 8), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('MAYA GOD-LEVEL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14, letterSpacing: 1.2)), Text(_ai.activeModel.name.toUpperCase(), style: TextStyle(color: _cyan.withOpacity(0.8), fontSize: 10))])]), actions: [if (_ai.lastDetectedEmotion != UserEmotion.neutral) Padding(padding: const EdgeInsets.only(right: 4), child: Center(child: Text(_emotionEmoji(_ai.lastDetectedEmotion), style: const TextStyle(fontSize: 20)))), IconButton(icon: Icon(Icons.psychology_outlined, color: _showThinking ? _cyan : Colors.white38), tooltip: 'Toggle thinking panel', onPressed: () => setState(() => _showThinking = !_showThinking)), IconButton(icon: const Icon(Icons.delete_outline, color: Colors.white38), tooltip: 'Clear conversation', onPressed: () { _ai.clearConversation(); _agent.cancelCurrentPlan(); setState(() { _showAgentPanel = false; }); })]);
+
+  Widget _glowDot(Color color, bool pulse) => AnimatedBuilder(animation: _ambient, builder: (_, __) { final scale = pulse ? (1.0 + math.sin(_ambient.value * 2 * math.pi) * 0.3) : 1.0; return Transform.scale(scale: scale, child: Container(width: 10, height: 10, decoration: BoxDecoration(shape: BoxShape.circle, color: color, boxShadow: [BoxShadow(color: color.withOpacity(0.6), blurRadius: 8)]))); });
+
+  Widget _modeSelector() => Container(color: _surface, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: Row(children: [Expanded(child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: ReasoningMode.values.map((m) { final selected = _ai.reasoningMode == m; return Padding(padding: const EdgeInsets.only(right: 8), child: GestureDetector(onTap: () => setState(() => _ai.setReasoningMode(m)), child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), color: selected ? _modeColor(m).withOpacity(0.15) : Colors.transparent, border: Border.all(color: selected ? _modeColor(m) : Colors.white12, width: 1)), child: Row(mainAxisSize: MainAxisSize.min, children: [Text(_modeIcon(m), style: const TextStyle(fontSize: 14)), const SizedBox(width: 6), Text(_modeLabel(m), style: TextStyle(color: selected ? _modeColor(m) : Colors.white54, fontSize: 12, fontWeight: selected ? FontWeight.bold : FontWeight.normal))])))); }).toList()))), Text('${_formatTokens(_ai.totalTokensUsed)} tk', style: const TextStyle(color: Colors.white24, fontSize: 11))]));
+
+  Widget _thinkingPanel() => Container(margin: const EdgeInsets.fromLTRB(12, 8, 12, 0), padding: const EdgeInsets.all(12), decoration: BoxDecoration(borderRadius: BorderRadius.circular(12), color: _violet.withOpacity(0.06), border: Border.all(color: _violet.withOpacity(0.3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Icon(Icons.auto_awesome, color: _violet, size: 14), const SizedBox(width: 6), Text('QUANTUM THINKING', style: TextStyle(color: _violet, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1)), const Spacer(), if (_ai.isThinking) _spinnerMini(_violet)]), const SizedBox(height: 8), ...(_ai.liveThinking.map((step) => _thinkingStep(step)))]));
+
+  Widget _thinkingStep(ThinkingStep step) => Padding(padding: const EdgeInsets.only(bottom: 6), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Icon(step.isComplete ? Icons.check_circle_outline : Icons.radio_button_unchecked, size: 14, color: step.isComplete ? _green : Colors.white38), const SizedBox(width: 8), Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(step.label, style: TextStyle(color: step.isComplete ? _green : Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)), if (step.content.isNotEmpty) Text(step.content.length > 150 ? step.content.substring(0, 150) + '...' : step.content, style: const TextStyle(color: Colors.white38, fontSize: 11, height: 1.4))])), if (step.elapsed != Duration.zero) Text('${step.elapsed.inMilliseconds}ms', style: const TextStyle(color: Colors.white24, fontSize: 10))]));
+
+  Widget _agentPanel() { final plan = _agent.currentPlan!; return Container(margin: const EdgeInsets.fromLTRB(12, 8, 12, 0), padding: const EdgeInsets.all(12), decoration: BoxDecoration(borderRadius: BorderRadius.circular(12), color: _cyan.withOpacity(0.05), border: Border.all(color: _cyan.withOpacity(0.25))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Row(children: [Icon(Icons.smart_toy_outlined, color: _cyan, size: 14), const SizedBox(width: 6), Expanded(child: Text('AUTONOMOUS AGENT', style: TextStyle(color: _cyan, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1))), Text('${plan.completedCount}/${plan.tasks.length}', style: TextStyle(color: _cyan, fontSize: 12, fontWeight: FontWeight.bold))]), const SizedBox(height: 8), ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: plan.progress, backgroundColor: Colors.white12, valueColor: AlwaysStoppedAnimation<Color>(_cyan), minHeight: 3)), const SizedBox(height: 8), ...plan.tasks.map((t) => _agentTask(t)), if (_agent.statusMessage.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text(_agent.statusMessage, style: const TextStyle(color: Colors.white38, fontSize: 11, fontStyle: FontStyle.italic)))])); }
+
+  Widget _agentTask(AgentTask task) { final (icon, color) = switch (task.status) { AgentTaskStatus.success => (Icons.check_circle, _green), AgentTaskStatus.failed => (Icons.error_outline, Colors.redAccent), AgentTaskStatus.running => (Icons.hourglass_top, _cyan), AgentTaskStatus.skipped => (Icons.skip_next, Colors.white24), AgentTaskStatus.pending => (Icons.circle_outlined, Colors.white24) }; return Padding(padding: const EdgeInsets.only(bottom: 4), child: Row(children: [Icon(icon, size: 14, color: color), const SizedBox(width: 8), Expanded(child: Text(task.title, style: TextStyle(color: task.status == AgentTaskStatus.running ? Colors.white : Colors.white60, fontSize: 12, fontWeight: task.status == AgentTaskStatus.running ? FontWeight.bold : FontWeight.normal))), if (task.duration != null) Text('${task.duration!.inMilliseconds}ms', style: const TextStyle(color: Colors.white24, fontSize: 10))])); }
+
+  Widget _messageList() { if (_ai.conversation.isEmpty) return _emptyState(); return ListView.builder(controller: _scroll, padding: const EdgeInsets.fromLTRB(12, 12, 12, 8), itemCount: _ai.conversation.length, itemBuilder: (context, index) { final msg = _ai.conversation[index]; return _messageBubble(msg, index); }); }
+
+  Widget _emptyState() => Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [ShaderMask(shaderCallback: (bounds) => const LinearGradient(colors: [Color(0xFF00D9FF), Color(0xFFAA00FF), Color(0xFFFF3CAC)]).createShader(bounds), child: const Icon(Icons.auto_awesome, size: 60, color: Colors.white)), const SizedBox(height: 16), const Text('GOD-LEVEL AI ACTIVE', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: 2)), const SizedBox(height: 8), Text('Ask me anything. I think deeply, reason carefully,\nand execute autonomously.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white.withOpacity(0.4), height: 1.5)), const SizedBox(height: 24), ..._starterPrompts().map((p) => Padding(padding: const EdgeInsets.only(bottom: 8), child: GestureDetector(onTap: () { _ctrl.text = p; _send(); }, child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.white12), color: Colors.white.withOpacity(0.04)), child: Text(p, style: const TextStyle(color: Colors.white70, fontSize: 13))))))
+  ]));
+
+  Widget _messageBubble(ConversationMessage msg, int index) {
+    final isUser = msg.role == 'user'; final isLast = index == _ai.conversation.length - 1;
+    final showStreaming = isLast && !isUser && _ai.isStreaming;
+    final text = showStreaming ? _ai.streamingBuffer : msg.content;
+    return Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start, crossAxisAlignment: CrossAxisAlignment.end, children: [
+      if (!isUser) _avatarIcon(), const SizedBox(width: 8),
+      Flexible(child: Column(crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start, children: [
+        Container(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10), decoration: BoxDecoration(borderRadius: BorderRadius.only(topLeft: const Radius.circular(18), topRight: const Radius.circular(18), bottomLeft: Radius.circular(isUser ? 18 : 4), bottomRight: Radius.circular(isUser ? 4 : 18)), gradient: isUser ? const LinearGradient(colors: [Color(0xFF1A3A6E), Color(0xFF0D1F3F)], begin: Alignment.topLeft, end: Alignment.bottomRight) : null, color: isUser ? null : _surface, border: Border.all(color: isUser ? _cyan.withOpacity(0.3) : Colors.white.withOpacity(0.06))), child: _renderMessageContent(text, isUser, showStreaming)),
+        const SizedBox(height: 4),
+        if (!isUser) _messageMeta(msg),
+        if (!isUser && !_ai.isThinking && !showStreaming) _followUpChips(msg),
+      ])),
+      const SizedBox(width: 8), if (isUser) _userAvatar(),
+    ]));
+  }
+
+  Widget _renderMessageContent(String text, bool isUser, bool isStreaming) { final segments = _parseCodeBlocks(text); return Column(crossAxisAlignment: CrossAxisAlignment.start, children: segments.map((seg) { if (seg.isCode) return _codeBlock(seg.content, seg.language); return SelectableText(seg.content + (isStreaming && segments.last == seg ? '|' : ''), style: TextStyle(color: isUser ? Colors.white : Colors.white.withOpacity(0.88), fontSize: 14, height: 1.55)); }).toList()); }
+
+  Widget _codeBlock(String code, String language) => Container(margin: const EdgeInsets.symmetric(vertical: 8), decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), color: const Color(0xFF0D0F1A), border: Border.all(color: Colors.white12)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Colors.white12)), color: Colors.white.withOpacity(0.04), borderRadius: const BorderRadius.vertical(top: Radius.circular(8))), child: Row(children: [Text(language.isEmpty ? 'code' : language, style: const TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 0.5)), const Spacer(), GestureDetector(onTap: () { Clipboard.setData(ClipboardData(text: code)); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied!'), duration: Duration(seconds: 1))); }, child: const Icon(Icons.copy_all, size: 14, color: Colors.white38))])), SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(12), child: SelectableText(code, style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF8AFFDA), fontSize: 13, height: 1.5)))]));
+
+  Widget _messageMeta(ConversationMessage msg) { final parts = <String>[]; if (msg.model != null) parts.add(msg.model!.name); parts.add(_timeAgo(msg.timestamp)); return Row(mainAxisSize: MainAxisSize.min, children: parts.map((p) => Padding(padding: const EdgeInsets.only(right: 8), child: Text(p, style: const TextStyle(color: Colors.white24, fontSize: 10)))).toList()); }
+  Widget _followUpChips(ConversationMessage msg) => const SizedBox.shrink();
+
+  Widget _streamingIndicator() => Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6), child: Row(children: [_spinnerMini(_cyan), const SizedBox(width: 8), Text('Thinking... ${_ai.streamingBuffer.split(' ').length} words', style: TextStyle(color: _cyan.withOpacity(0.7), fontSize: 12))]));
+
+  Widget _inputBar() => Container(padding: const EdgeInsets.fromLTRB(12, 8, 12, 16), decoration: BoxDecoration(color: _surface, border: Border(top: BorderSide(color: Colors.white.withOpacity(0.06)))), child: Row(children: [Expanded(child: Container(decoration: BoxDecoration(borderRadius: BorderRadius.circular(24), color: Colors.white.withOpacity(0.05), border: Border.all(color: Colors.white12)), child: TextField(controller: _ctrl, style: const TextStyle(color: Colors.white, fontSize: 14), maxLines: 4, minLines: 1, textInputAction: TextInputAction.newline, onSubmitted: (_) => _send(), decoration: InputDecoration(hintText: _hintText(), hintStyle: const TextStyle(color: Colors.white24), contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10), border: InputBorder.none)))), const SizedBox(width: 8), GestureDetector(onTap: _ai.isThinking ? null : _send, child: AnimatedContainer(duration: const Duration(milliseconds: 200), width: 46, height: 46, decoration: BoxDecoration(shape: BoxShape.circle, gradient: _ai.isThinking ? null : const LinearGradient(colors: [Color(0xFF00D9FF), Color(0xFFAA00FF)], begin: Alignment.topLeft, end: Alignment.bottomRight), color: _ai.isThinking ? Colors.white12 : null), child: _ai.isThinking ? _spinnerMini(Colors.white38) : const Icon(Icons.send_rounded, color: Colors.white, size: 20)))]));
+
+  Widget _avatarIcon() => Container(width: 28, height: 28, decoration: const BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: [Color(0xFF00D9FF), Color(0xFFAA00FF)], begin: Alignment.topLeft, end: Alignment.bottomRight)), child: const Icon(Icons.auto_awesome, size: 14, color: Colors.white));
+  Widget _userAvatar() => Container(width: 28, height: 28, decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.white.withOpacity(0.08)), child: const Icon(Icons.person, size: 16, color: Colors.white54));
+  Widget _spinnerMini(Color color) => SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.5, color: color));
+
+  Color _modeColor(ReasoningMode m) => switch (m) { ReasoningMode.fast => const Color(0xFF00FF87), ReasoningMode.balanced => const Color(0xFF00D9FF), ReasoningMode.quantum => const Color(0xFFAA00FF), ReasoningMode.autonomous => const Color(0xFFFF3CAC) };
+  String _modeIcon(ReasoningMode m) => switch (m) { ReasoningMode.fast => '⚡', ReasoningMode.balanced => '🧠', ReasoningMode.quantum => '🌌', ReasoningMode.autonomous => '🤖' };
+  String _modeLabel(ReasoningMode m) => switch (m) { ReasoningMode.fast => 'Fast', ReasoningMode.balanced => 'Balanced', ReasoningMode.quantum => 'Quantum', ReasoningMode.autonomous => 'Agent' };
+  String _emotionEmoji(UserEmotion e) => switch (e) { UserEmotion.happy => '😄', UserEmotion.frustrated => '😤', UserEmotion.anxious => '😰', UserEmotion.curious => '🤔', UserEmotion.urgent => '⚡', UserEmotion.neutral => '' };
+  String _hintText() => switch (_ai.reasoningMode) { ReasoningMode.fast => 'Ask anything (fast)...', ReasoningMode.balanced => 'Ask anything (balanced reasoning)...', ReasoningMode.quantum => 'Ask anything (deep quantum reasoning)...', ReasoningMode.autonomous => 'Describe a goal for the agent...' };
+  String _formatTokens(int tokens) { if (tokens > 1000) return '${(tokens / 1000).toStringAsFixed(1)}k'; return tokens.toString(); }
+  String _timeAgo(DateTime dt) { final diff = DateTime.now().difference(dt); if (diff.inSeconds < 60) return 'now'; if (diff.inMinutes < 60) return '${diff.inMinutes}m ago'; return '${diff.inHours}h ago'; }
+  List<String> _starterPrompts() => ['🧬 Explain quantum computing in simple terms', '💻 Write a Flutter widget with animations', '🤖 Plan and execute a research task for me'];
+  List<_TextSegment> _parseCodeBlocks(String text) { final segments = <_TextSegment>[]; final regex = RegExp(r'```(\w*)\n([\s\S]*?)```'); int last = 0; for (final m in regex.allMatches(text)) { if (m.start > last) segments.add(_TextSegment(text.substring(last, m.start), false, '')); segments.add(_TextSegment(m.group(2) ?? '', true, m.group(1) ?? '')); last = m.end; } if (last < text.length) segments.add(_TextSegment(text.substring(last), false, '')); if (segments.isEmpty) segments.add(_TextSegment(text, false, '')); return segments; }
+}
+
+class _TextSegment { final String content; final bool isCode; final String language; const _TextSegment(this.content, this.isCode, this.language); }
