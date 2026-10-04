@@ -1,0 +1,18 @@
+
+              Positioned(left: 28, right: 28, top: layout.textTop, height: layout.textBottom - layout.textTop, child: IgnorePointer(child: RepaintBoundary(child: NexusReadout(phase: _phase, statusText: widget.statusText)))),
+              Positioned(
+                left: layout.micCenter.dx - layout.micRadius, top: layout.micCenter.dy - layout.micRadius,
+                width: micDiameter, height: micDiameter,
+                child: ListenableBuilder(listenable: _phase, builder: (context, _) => NexusMicrophone(state: state, repaint: _visual, qualityTier: _visual.qualityTier, active: _phase.isActive, onTap: widget.onCoreTap)),
+              ),
+              Positioned(
+                left: 16, right: 16, top: layout.topBarTop, height: layout.topBarHeight,
+                child: RepaintBoundary(child: NexusStatusBar(phase: _phase, connected: widget.connected, overlayActive: widget.overlayActive, qualityTier: _visual.qualityTier, onOverlayTap: widget.onOverlayTap, onGodModeTap: widget.onGodModeTap, onVisionTap: widget.onVisionTap)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}

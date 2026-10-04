@@ -1,0 +1,29 @@
+class MayaOmegaProviderAdapter {
+  final String id, name, category, state, limitation;
+  final List<String> requirements, capabilities;
+  const MayaOmegaProviderAdapter({required this.id, required this.name, required this.category, required this.state, required this.requirements, required this.capabilities, required this.limitation});
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'category': category, 'state': state, 'requirements': requirements, 'capabilities': capabilities, 'limitation': limitation};
+}
+
+class MayaOmegaProviderAdapterService {
+  static const adapters = <MayaOmegaProviderAdapter>[
+    MayaOmegaProviderAdapter(id: 'google_calendar', name: 'Google Calendar', category: 'calendar', state: 'setup', requirements: ['OAuth connection', 'calendar scope', 'user approval'], capabilities: ['read events', 'create events', 'update events', 'cancel events'], limitation: 'Only local MAYA calendar state is active until OAuth is connected.'),
+    MayaOmegaProviderAdapter(id: 'outlook_calendar', name: 'Outlook Calendar', category: 'calendar', state: 'setup', requirements: ['Microsoft OAuth connection', 'calendar scope', 'user approval'], capabilities: ['read events', 'create events', 'update events', 'cancel events'], limitation: 'Only local MAYA calendar state is active until OAuth is connected.'),
+    MayaOmegaProviderAdapter(id: 'browser', name: 'Audited Browser', category: 'browser', state: 'companion', requirements: ['PC/browser worker', 'visible session', 'domain scope'], capabilities: ['navigate', 'extract', 'form workflow', 'replay'], limitation: 'Android can open URLs; safe multi-step browser control requires a companion.'),
+    MayaOmegaProviderAdapter(id: 'email', name: 'Email', category: 'communication', state: 'setup', requirements: ['mail provider connection', 'send confirmation'], capabilities: ['draft', 'reply', 'send', 'search'], limitation: 'No email provider is silently accessed.'),
+    MayaOmegaProviderAdapter(id: 'pdf', name: 'PDF Extraction', category: 'documents', state: 'companion', requirements: ['PDF parser adapter', 'workspace scope'], capabilities: ['extract text', 'summarize', 'cite pages', 'generate report'], limitation: 'Text and structured documents work locally; PDF parsing requires the companion adapter.'),
+    MayaOmegaProviderAdapter(id: 'embedding', name: 'Embedding Model', category: 'memory', state: 'setup', requirements: ['embedding model provider or PC model'], capabilities: ['real embeddings', 'semantic retrieval', 'clustering'], limitation: 'The phone currently uses a deterministic replaceable vector index.'),
+    MayaOmegaProviderAdapter(id: 'pc_code_lab', name: 'PC Code Lab', category: 'engineering', state: 'companion', requirements: ['paired PC node', 'sandbox', 'Git scope', 'build tools'], capabilities: ['run tests', 'build APK', 'benchmark', 'security scan', 'deploy', 'rollback'], limitation: 'The phone can scan and patch private files but does not execute arbitrary code.'),
+    MayaOmegaProviderAdapter(id: 'mesh_transport', name: 'Encrypted MAYA Mesh Transport', category: 'distributed', state: 'companion', requirements: ['paired node', 'authenticated handshake', 'encrypted transport'], capabilities: ['sync project state', 'route tasks', 'transfer artifacts', 'audit replay'], limitation: 'Pairing metadata exists; no network transport is enabled without a companion.'),
+    MayaOmegaProviderAdapter(id: 'mediaprojection', name: 'OMEGA MediaProjection Vision', category: 'vision', state: 'permission', requirements: ['visible Android consent', 'active foreground session'], capabilities: ['latest-frame capture', '60-second memory rewind', 'visual verification'], limitation: 'Secure surfaces remain protected and capture stops when Android revokes consent.'),
+    MayaOmegaProviderAdapter(id: 'vision_models', name: 'On-device OCR/Object Models', category: 'vision', state: 'setup', requirements: ['tested TFLite/MediaPipe models', 'device-specific performance profile'], capabilities: ['OCR', 'object labels', 'visual confidence', 'scene-graph observations'], limitation: 'Accessibility scene graphs work now; YOLO/CLIP/NPU model files are not bundled.'),
+    MayaOmegaProviderAdapter(id: 'gaze_model', name: 'Visible Gaze Estimation', category: 'vision', state: 'setup', requirements: ['front-camera permission', 'visible camera session', 'tested eye model'], capabilities: ['gaze estimate', 'dwell observation', 'orb direction'], limitation: 'Dwell policy is implemented; gaze coordinates require a real tested model.'),
+    MayaOmegaProviderAdapter(id: 'live_wallpaper_renderer', name: 'Generative Live Wallpaper', category: 'media', state: 'companion', requirements: ['media generation provider or PC node', 'preview', 'Android wallpaper renderer', 'apply confirmation'], capabilities: ['animate selected image', 'preview loop', 'apply live wallpaper'], limitation: 'The safe workflow contract exists; no video model or renderer is bundled.'),
+  ];
+
+  Map<String, dynamic> status({String? adapterId}) {
+    final selected = adapterId == null || adapterId.trim().isEmpty ? adapters : adapters.where((a) => a.id == adapterId.trim()).toList();
+    if (selected.isEmpty) return {'success': false, 'error': 'Provider adapter not found.'};
+    return {'success': true, 'adapters': selected.map((a) => a.toJson()).toList()};
+  }
+}

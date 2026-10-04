@@ -1,0 +1,64 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+
+import 'audio_visual_state.dart';
+import 'nexus_layout.dart';
+import 'nexus_palette.dart';
+
+class NexusBackground extends StatelessWidget {
+  const NexusBackground({super.key, required this.state, required this.layout, required this.repaint});
+  final AudioVisualState state;
+  final NexusLayout layout;
+  final Listenable repaint;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        RepaintBoundary(child: CustomPaint(isComplex: true, painter: _StaticBackdropPainter(layout))),
+        CustomPaint(painter: _AtmospherePainter(state: state, layout: layout, repaint: repaint)),
+      ],
+    );
+  }
+}
+
+class _StaticBackdropPainter extends CustomPainter {
+  _StaticBackdropPainter(this.layout);
+  final NexusLayout layout;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawRect(rect, Paint()..shader = const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0xFF050B1C), Color(0xFF030713), Color(0xFF01030A)], stops: [0, .55, 1]).createShader(rect));
+
+    final sheetPaint = Paint()..style = PaintingStyle.stroke..strokeWidth = .8;
+    final sheets = <RRect>[
+      RRect.fromRectAndRadius(Rect.fromLTWH(size.width * .05, layout.topBarTop + layout.topBarHeight + 10, size.width * .9, layout.textTop - layout.topBarTop - layout.topBarHeight - 6), const Radius.circular(36)),
+      RRect.fromRectAndRadius(Rect.fromLTWH(size.width * .02, layout.waveRect.top - 6, size.width * .96, layout.waveRect.height + 12), const Radius.circular(40)),
+    ];
+    for (final sheet in sheets) {
+      canvas.drawRRect(sheet, Paint()..shader = LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Colors.white.withValues(alpha: .018), Colors.white.withValues(alpha: .004), NexusPalette.blue.withValues(alpha: .012)]).createShader(sheet.outerRect));
+      sheetPaint.shader = LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.white.withValues(alpha: .07), Colors.white.withValues(alpha: .01), Colors.white.withValues(alpha: .035)]).createShader(sheet.outerRect);
+      canvas.drawRRect(sheet, sheetPaint);
+    }
+    canvas.drawRect(rect, Paint()..shader = RadialGradient(center: Alignment(0, (layout.orbCenter.dy / size.height) * 2 - 1), radius: 1.15, colors: [Colors.transparent, NexusPalette.ink.withValues(alpha: .65)], stops: const [.45, 1]).createShader(rect));
+  }
+
+  @override
+  bool shouldRepaint(_StaticBackdropPainter old) => old.layout != layout;
+}
+
+class _AtmospherePainter extends CustomPainter {
+  _AtmospherePainter({required this.state, required this.layout, required Listenable repaint}) : super(repaint: repaint);
+  final AudioVisualState state;
+  final NexusLayout layout;
+
+  static const int _dustCount = 42;
+  static final Float32List _seed = _buildSeed();
+  static final Float32List _points = Float32List(_dustCount * 2);
+  static final Paint _paint = Paint();
+  static fin
