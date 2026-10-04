@@ -2,7 +2,6 @@ plugins {
     id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
-    id "com.chaquo.python"
 }
 
 def keystoreProperties = new Properties()
@@ -15,7 +14,7 @@ if (hasReleaseSigning) {
 android {
     namespace "com.foysol.jarvis"
     compileSdkVersion 36
-    ndkVersion "28.2.13676358"
+    ndkVersion flutter.ndkVersion
     compileOptions {
         coreLibraryDesugaringEnabled = true
         sourceCompatibility JavaVersion.VERSION_17
@@ -70,12 +69,10 @@ flutter {
 }
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:2.2.20"
-    implementation "androidx.appcompat:appcompat:1.8.0"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.21"
+    implementation "androidx.appcompat:appcompat:1.7.0"
     implementation "androidx.multidex:multidex:2.0.1"
-    implementation "androidx.core:core-ktx:1.18.0"
-    implementation "androidx.work:work-runtime-ktx:2.12.0"
+    implementation "androidx.core:core-ktx:1.16.0"
+    implementation "androidx.work:work-runtime-ktx:2.10.1"
     implementation "androidx.biometric:biometric:1.1.0"
-    implementation "dev.rikka.shizuku:api:13.1.5"
-    implementation "dev.rikka.shizuku:provider:13.1.5"
 }
