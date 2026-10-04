@@ -1,0 +1,52 @@
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'audio_visual_state.dart';
+
+class NexusGlass extends StatelessWidget {
+  const NexusGlass({super.key, this.child, this.circle = false, this.borderRadius = 22, this.blur = 14, this.surface = true, this.state, this.repaint, required this.qualityTier});
+
+  final Widget? child;
+  final bool circle;
+  final double borderRadius, blur;
+  final bool surface;
+  final AudioVisualState? state;
+  final Listenable? repaint;
+  final ValueListenable<int> qualityTier;
+
+  @override
+  Widget build(BuildContext context) {
+    final content = surface
+        ? CustomPaint(painter: _GlassSurfacePainter(circle: circle, radius: borderRadius, state: state, repaint: repaint), child: child)
+        : (child ?? const SizedBox.expand());
+    final glass = ValueListenableBuilder<int>(
+      valueListenable: qualityTier, child: content,
+      builder: (context, tier, content) {
+        final sigma = switch (tier) { 0 => 0.0, 1 => blur * .72, _ => blur * 1.15 };
+        if (sigma <= 0) return content!;
+        return BackdropFilter(filter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma), child: content!);
+      },
+    );
+    return circle ? ClipOval(child: glass) : ClipRRect(borderRadius: BorderRadius.circular(borderRadius), child: glass);
+  }
+}
+
+class _GlassSurfacePainter extends CustomPainter {
+  _GlassSurfacePainter({required this.circle, required this.radius, this.state, Listenable? repaint}) : super(repaint: repaint);
+  final bool circle; final double radius; final AudioVisualState? state;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final shape = circle ? RRect.fromRectAndRadius(rect, Radius.circular(size.shortestSide / 2)) : RRect.fromRectAndRadius(rect, Radius.circular(radius));
+    final glow = state?.ambience ?? .1;
+    final accent = state?.accent ?? const Color(0xFF4E7BFF);
+    final t = state?.time ?? 0.0;
+
+    canvas.drawRRect(shape, Paint()..shader = LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Colors.white.withValues(alpha: .04), const Color(0xFF0A1430).withValues(alpha: .10), const Color(0xFF02050D).withValues(alpha: .18)], stops: const [0, .5, 1]).createShader(rect));
+
+    final sheenRect = Rect.fromLTWH(0, 0, size.width, size.height * .52);
+    canvas.drawRRect(shape, Paint()..shader = LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.white.withValues(alpha: .06 + glow * .04), Colors.white.withValues(alpha: 0)]).createShader(sheenRect));
