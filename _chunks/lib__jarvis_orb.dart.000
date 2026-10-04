@@ -1,0 +1,168 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+import 'package:flutter/material.dart';
+
+class JarvisOrb extends StatefulWidget {
+  final double size, audioLevel;
+  final bool listening, booting;
+  final Color primaryColor, coreColor;
+  final Color? secondaryColor;
+  final String? centerLabel, centerText;
+  const JarvisOrb({super.key, this.size = 280, this.audioLevel = 0.0, this.listening = false, this.primaryColor = const Color(0xFF50D2FF), this.coreColor = const Color(0xFFBEF0FF), this.secondaryColor, this.centerLabel, this.centerText, this.booting = false});
+  @override State<JarvisOrb> createState() => _JarvisOrbState();
+}
+
+class _JarvisOrbState extends State<JarvisOrb> with TickerProviderStateMixin {
+  late final AnimationController _mainCtrl;
+  late final List<_Particle> _particles;
+  late final List<_HexCell> _hexCells;
+  late final List<_ArcSpark> _arcs;
+  double _smoothedLevel = 0.0, _time = 0.0, _idlePhase = 0.0;
+  Timer? _idleTimer;
+  static const int particleCount = 420, hexCount = 48, arcCount = 6;
+
+  @override
+  void initState() {
+    super.initState();
+    _mainCtrl = AnimationController(vsync: this, duration: const Duration(days: 1), animationBehavior: AnimationBehavior.preserve)..repeat();
+    _mainCtrl.addListener(_onTick);
+    final rng = math.Random(42);
+    _particles = List.generate(particleCount, (i) { final phi = math.acos(1 - 2 * (i + 0.5) / particleCount); final theta = math.pi * (1 + math.sqrt(5)) * i; return _Particle(phi: phi, theta: theta, speed: 0.12 + rng.nextDouble() * 0.22, jitterPhase: rng.nextDouble() * math.pi * 2, jitterSpeed: 0.5 + rng.nextDouble() * 0.9, baseSize: 0.9 + rng.nextDouble() * 1.8, layer: rng.nextInt(3)); });
+    _hexCells = List.generate(hexCount, (i) => _HexCell(angle: (i / hexCount) * math.pi * 2, radiusMul: 1.28 + rng.nextDouble() * 0.18, pulseOffset: rng.nextDouble() * math.pi * 2, rotSpeed: (rng.nextBool() ? 1 : -1) * (0.08 + rng.nextDouble() * 0.1)));
+    _arcs = List.generate(arcCount, (i) => _ArcSpark(startAngle: rng.nextDouble() * math.pi * 2, length: 0.3 + rng.nextDouble() * 0.6, speed: 0.4 + rng.nextDouble() * 0.6, radiusMul: 1.05 + rng.nextDouble() * 0.15, life: rng.nextDouble()));
+    _idleTimer = Timer.periodic(const Duration(milliseconds: 50), (_) { if (!widget.listening) _idlePhase += 0.05; });
+  }
+
+  void _onTick() {
+    _time += 0.016;
+    final target = widget.booting ? .22 + math.sin(_time * 4.2) * .14 + widget.audioLevel * .24 : widget.listening ? widget.audioLevel.clamp(0.0, 1.0) : 0.05 + math.sin(_idlePhase) * 0.04;
+    _smoothedLevel += (target - _smoothedLevel) * 0.18;
+    setState(() {});
+  }
+
+  @override
+  void dispose() { _mainCtrl.dispose(); _idleTimer?.cancel(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(width: widget.size, height: widget.size, child: RepaintBoundary(child: CustomPaint(painter: _JarvisOrbPainter(time: _time, level: _smoothedLevel, particles: _particles, hexCells: _hexCells, arcs: _arcs, primary: widget.primaryColor, core: widget.coreColor, label: widget.centerLabel ?? widget.centerText, listening: widget.listening, booting: widget.booting))));
+  }
+}
+
+class _Particle { final double phi, theta, speed, jitterPhase, jitterSpeed, baseSize; final int layer; _Particle({required this.phi, required this.theta, required this.speed, required this.jitterPhase, required this.jitterSpeed, required this.baseSize, required this.layer}); }
+class _HexCell { final double angle, radiusMul, pulseOffset, rotSpeed; _HexCell({required this.angle, required this.radiusMul, required this.pulseOffset, required this.rotSpeed}); }
+class _ArcSpark { final double startAngle, length, speed, radiusMul; double life; _ArcSpark({required this.startAngle, required this.length, required this.speed, required this.radiusMul, required this.life}); }
+
+class _JarvisOrbPainter extends CustomPainter {
+  final double time, level;
+  final List<_Particle> particles;
+  final List<_HexCell> hexCells;
+  final List<_ArcSpark> arcs;
+  final Color primary, core;
+  final String? label;
+  final bool listening, booting;
+  _JarvisOrbPainter({required this.time, required this.level, required this.particles, required this.hexCells, required this.arcs, required this.primary, required this.core, required this.label, required this.listening, required this.booting});
+  Color _a(Color c, double alpha) => c.withValues(alpha: alpha.clamp(0.0, 1.0));
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2, cy = size.height / 2;
+    final baseR = size.width * 0.285;
+    final pulse = 1 + level * (booting ? .42 : .32) + math.sin(time * (booting ? 2.4 : 1.3)) * (booting ? .032 : .015);
+    final r = baseR * pulse;
+    _paintGlassBall(canvas, cx, cy, r);
+    _paintCoreGlow(canvas, cx, cy, r);
+    _paintHexShell(canvas, cx, cy, r);
+    _paintParticleField(canvas, cx, cy, r);
+    _paintScanRings(canvas, cx, cy, r);
+    _paintWaveformRing(canvas, cx, cy, r);
+    _paintArcSparks(canvas, cx, cy, r);
+    _paintOuterRim(canvas, cx, cy, r);
+    if (booting) _paintSignalBeams(canvas, cx, cy, r);
+    if (label != null) _paintLabel(canvas, cx, cy);
+  }
+
+  void _paintGlassBall(Canvas canvas, double cx, double cy, double r) {
+    final center = Offset(cx, cy); final ballR = r * 0.50;
+    canvas.drawCircle(center, ballR * 1.40, Paint()..maskFilter = MaskFilter.blur(BlurStyle.normal, ballR * 0.55)..color = _a(primary, 0.10 + level * 0.12)..blendMode = BlendMode.plus);
+    canvas.drawCircle(center, ballR, Paint()..shader = ui.Gradient.radial(Offset(cx - ballR * 0.22, cy - ballR * 0.28), ballR, [_a(core, 0.08 + level * 0.06), _a(primary, 0.04 + level * 0.03), const Color(0x12050B1C), const Color(0x1E020510)], [0.0, 0.30, 0.68, 1.0])..blendMode = BlendMode.srcOver);
+    canvas.drawCircle(center, ballR, Paint()..shader = ui.Gradient.radial(Offset(cx - ballR * 0.28, cy - ballR * 0.32), ballR * 0.70, [Color.fromRGBO(255, 255, 255, 0.13 + level * 0.09), Color.fromRGBO(255, 255, 255, 0.02), const Color(0x00000000)], [0.0, 0.55, 1.0])..blendMode = BlendMode.srcOver);
+    canvas.drawCircle(center, ballR, Paint()..shader = ui.Gradient.radial(Offset(cx + math.cos(time * 0.70) * ballR * 0.26, cy + math.sin(time * 0.52) * ballR * 0.18), ballR * 0.58, [_a(core, 0.07 + level * 0.16), _a(primary, 0.03 + level * 0.07), const Color(0x00000000)], [0.0, 0.52, 1.0])..blendMode = BlendMode.plus);
+    canvas.drawCircle(center, ballR, Paint()..shader = ui.Gradient.radial(Offset(cx + math.cos(time * 0.42 + math.pi) * ballR * 0.20, cy + math.sin(time * 0.60 + math.pi) * ballR * 0.22), ballR * 0.45, [_a(primary, 0.06 + level * 0.10), const Color(0x00000000)], [0.0, 1.0])..blendMode = BlendMode.plus);
+    canvas.drawCircle(center, ballR, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.8..shader = ui.Gradient.sweep(center, [Color.fromRGBO(255, 255, 255, 0.52), _a(primary, 0.32 + level * 0.22), Color.fromRGBO(255, 255, 255, 0.05), _a(core, 0.40 + level * 0.18), Color.fromRGBO(255, 255, 255, 0.52)], [0.0, 0.25, 0.50, 0.75, 1.0], TileMode.clamp, time * 0.25, time * 0.25 + math.pi * 2)..blendMode = BlendMode.srcOver);
+    canvas.save(); canvas.translate(cx - ballR * 0.36, cy - ballR * 0.44); canvas.rotate(-0.52);
+    canvas.drawOval(Rect.fromCenter(center: Offset.zero, width: ballR * 0.72, height: ballR * 0.26), Paint()..shader = ui.Gradient.radial(Offset.zero, ballR * 0.36, [Color.fromRGBO(255, 255, 255, 0.30 + level * 0.12), Color.fromRGBO(255, 255, 255, 0.0)])..blendMode = BlendMode.srcOver);
+    canvas.restore();
+    canvas.save(); canvas.translate(cx + ballR * 0.30, cy + ballR * 0.35); canvas.rotate(0.4);
+    canvas.drawOval(Rect.fromCenter(center: Offset.zero, width: ballR * 0.28, height: ballR * 0.10), Paint()..shader = ui.Gradient.radial(Offset.zero, ballR * 0.14, [Color.fromRGBO(255, 255, 255, 0.10 + level * 0.06), Color.fromRGBO(255, 255, 255, 0.0)])..blendMode = BlendMode.srcOver);
+    canvas.restore();
+    canvas.drawArc(Rect.fromCircle(center: center, radius: ballR * 0.85), 0.18, 1.08, false, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.1..color = Color.fromRGBO(255, 255, 255, 0.07 + level * 0.13)..blendMode = BlendMode.srcOver);
+  }
+
+  void _paintCoreGlow(Canvas canvas, double cx, double cy, double r) {
+    canvas.drawRect(Rect.fromCircle(center: Offset(cx, cy), radius: r * 0.62), Paint()..shader = ui.Gradient.radial(Offset(cx, cy), r * 0.62, [_a(core, 0.55 + level * 0.35), _a(primary, 0.22 + level * 0.2), _a(primary, 0.0)], [0.0, 0.55, 1.0])..blendMode = BlendMode.plus);
+  }
+
+  void _paintHexShell(Canvas canvas, double cx, double cy, double r) {
+    final paint = Paint()..style = PaintingStyle.stroke..strokeWidth = 0.8..color = _a(primary, 0.14 + level * 0.12);
+    for (final hex in hexCells) { final angle = hex.angle + time * hex.rotSpeed; final pulse = 0.85 + 0.15 * math.sin(time * 1.4 + hex.pulseOffset); final rr = r * hex.radiusMul * pulse; final x = cx + math.cos(angle) * rr; final y = cy + math.sin(angle) * rr * 0.55; _drawHexagon(canvas, Offset(x, y), 2.4 + level * 1.5, paint); }
+  }
+
+  void _drawHexagon(Canvas canvas, Offset center, double radius, Paint paint) {
+    final path = Path(); for (int i = 0; i < 6; i++) { final a = (math.pi / 3) * i; final p = Offset(center.dx + radius * math.cos(a), center.dy + radius * math.sin(a)); if (i == 0) { path.moveTo(p.dx, p.dy); } else { path.lineTo(p.dx, p.dy); } } path.close(); canvas.drawPath(path, paint);
+  }
+
+  void _paintParticleField(Canvas canvas, double cx, double cy, double r) {
+    for (final p in particles) { final layerScale = switch (p.layer) { 0 => 0.72, 1 => 0.92, _ => 1.12 }; final th = p.theta + time * p.speed * 0.32; final wobble = math.sin(time * p.jitterSpeed + p.jitterPhase) * (0.035 + level * 0.14); final rr = r * layerScale * (1 + wobble); final x = cx + rr * math.sin(p.phi) * math.cos(th); final y = cy + rr * math.sin(p.phi) * math.sin(th) * 0.92; final z = math.cos(p.phi); final depth = (z + 1) / 2; final alpha = 0.12 + depth * 0.6 + level * 0.18; final sz = p.baseSize * (0.55 + depth * 0.85) * (1 + level * 0.45); canvas.drawCircle(Offset(x, y), math.max(sz, 0.4), Paint()..color = _a(primary, alpha.clamp(0.0, 0.95))..blendMode = BlendMode.plus); }
+  }
+
+  void _paintScanRings(Canvas canvas, double cx, double cy, double r) {
+    const ringCount = 7;
+    for (int ring = 0; ring < ringCount; ring++) {
+      final rot = time * (0.10 + ring * 0.016) * (ring.isEven ? 1.0 : -1.0) + ring * 0.88;
+      final fadeAlpha = (1.0 - ring / ringCount) * (0.30 + level * 0.34);
+      final ringRadius = r * (1.10 + ring * 0.105 + level * 0.048);
+      final scaleY = (0.42 - ring * 0.035).clamp(0.07, 0.44);
+      final strokeW = (1.7 - ring * 0.18).clamp(0.28, 1.7);
+      final hueA = ring / ringCount; final hueB = (ring + 1) / ringCount;
+      final colA = Color.lerp(const Color(0xFF2DEBFF), const Color(0xFFFF4F9A), hueA)!;
+      final colB = Color.lerp(const Color(0xFF8B6BFF), const Color(0xFFFF944D), hueB)!;
+      canvas.save(); canvas.translate(cx, cy); canvas.rotate(rot); canvas.scale(1.0, scaleY);
+      final shader = ui.Gradient.sweep(Offset.zero, [_a(colA, fadeAlpha), _a(colB, fadeAlpha * 0.78), _a(colA, fadeAlpha * 0.14), const Color(0x00000000), _a(colA, fadeAlpha * 0.14), _a(colB, fadeAlpha * 0.78), _a(colA, fadeAlpha)], [0.0, 0.18, 0.36, 0.50, 0.64, 0.82, 1.0], TileMode.clamp, -math.pi + rot * 0.4, math.pi + rot * 0.4);
+      canvas.drawCircle(Offset.zero, ringRadius, Paint()..style = PaintingStyle.stroke..strokeWidth = strokeW..shader = shader..blendMode = BlendMode.plus);
+      canvas.restore();
+    }
+  }
+
+  void _paintWaveformRing(Canvas canvas, double cx, double cy, double r) {
+    if (level < 0.04) return;
+    final path = Path(); const segments = 96; final waveR = r * 1.32;
+    for (int i = 0; i <= segments; i++) { final angle = (i / segments) * math.pi * 2; final noise = math.sin(angle * 6 + time * 3) * level * 8; final rr = waveR + noise; final x = cx + math.cos(angle) * rr; final y = cy + math.sin(angle) * rr; if (i == 0) path.moveTo(x, y); else path.lineTo(x, y); }
+    path.close();
+    canvas.drawPath(path, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.2..color = _a(primary, 0.35 + level * 0.35)..blendMode = BlendMode.plus);
+  }
+
+  void _paintArcSparks(Canvas canvas, double cx, double cy, double r) {
+    if (level < 0.1 && !booting) return;
+    final paint = Paint()..style = PaintingStyle.stroke..strokeWidth = 1.4..strokeCap = StrokeCap.round..blendMode = BlendMode.plus;
+    for (final arc in arcs) { final start = arc.startAngle + time * arc.speed; final sweep = arc.length * (0.5 + level * 0.5); paint.color = _a(core, booting ? .62 : .4); canvas.drawArc(Rect.fromCircle(center: Offset(cx, cy), radius: r * arc.radiusMul), start, sweep, false, paint); }
+  }
+
+  void _paintOuterRim(Canvas canvas, double cx, double cy, double r) {
+    if (level < 0.03 && !booting) return;
+    canvas.drawCircle(Offset(cx, cy), r * 1.02, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.5..color = _a(core, 0.3 * level)..blendMode = BlendMode.plus);
+  }
+
+  void _paintSignalBeams(Canvas canvas, double cx, double cy, double r) {
+    final paint = Paint()..style = PaintingStyle.stroke..strokeWidth = booting ? 1.0 : .65..strokeCap = StrokeCap.round..blendMode = BlendMode.plus;
+    for (var i = 0; i < 8; i++) { final angle = time * (booting ? .55 : .22) * (i.isEven ? 1 : -1) + i * math.pi / 4; final length = r * (.20 + level * .42) * (.65 + .35 * math.sin(time * 3.0 + i).abs()); final start = r * 1.06; paint.color = _a(i.isEven ? core : primary, (booting ? .34 : .18) + level * .16); canvas.drawLine(Offset(cx + math.cos(angle) * start, cy + math.sin(angle) * start), Offset(cx + math.cos(angle) * (start + length), cy + math.sin(angle) * (start + length)), paint); }
+  }
+
+  void _paintLabel(Canvas canvas, double cx, double cy) {
+    final tp = TextPainter(text: TextSpan(text: label, style: TextStyle(color: _a(core, 0.75 + level * 0.25), fontFamily: 'MayaMono', fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 2)), textDirection: TextDirection.ltr)..layout();
+    tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
+  }
+
+  @override bool shouldRepaint(covariant _JarvisOrbPainter oldDelegate) => true;
+}
