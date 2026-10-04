@@ -1,0 +1,138 @@
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'audio_visual_state.dart';
+import 'nexus_layout.dart';
+import 'nexus_palette.dart';
+
+class OrbEnergyFieldPainter extends CustomPainter {
+  OrbEnergyFieldPainter({required this.state, required this.layout, required Listenable repaint}) : super(repaint: repaint);
+  final AudioVisualState state; final NexusLayout layout;
+  static final Paint _fill = Paint();
+  static final Paint _additive = Paint()..blendMode = BlendMode.plus;
+  static final Paint _stroke = Paint()..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
+  static final Path _path = Path();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = state; final c = layout.orbCenter; final radius = layout.sphereRadius;
+    final e = s.orbEnergy.clamp(0.0, 1.2).toDouble();
+    final sphere = Rect.fromCircle(center: c, radius: radius);
+    _paintLightField(canvas, c, radius, sphere, e);
+    canvas.save(); canvas.clipPath(Path()..addOval(sphere));
+    _paintPlasma(canvas, c, radius, e); _paintFilaments(canvas, c, radius, e);
+    canvas.restore();
+    _paintCore(canvas, c, radius, e);
+    _paintGlassmorphicOverlay(canvas, c, radius, sphere, e);
+    _paintOrbitalRings(canvas, c, radius, sphere, e);
+    _paintShell(canvas, c, radius, sphere, e);
+  }
+
+  void _paintLightField(Canvas canvas, Offset c, double r, Rect sphere, double e) {
+    final s = state;
+    _fill..blendMode = BlendMode.srcOver..shader = RadialGradient(center: const Alignment(-.12, -.18), colors: [s.accent.withValues(alpha: .10 + e * .14), NexusPalette.blue.withValues(alpha: .05 + e * .05), NexusPalette.deepNavy.withValues(alpha: .08)], stops: const [0, .6, 1]).createShader(sphere);
+    canvas.drawCircle(c, r, _fill); _fill.shader = null;
+    _additive.shader = RadialGradient(center: const Alignment(.55, .55), radius: .85, colors: [NexusPalette.pink.withValues(alpha: .04 + e * .08 + s.weight(NexusPhase.speaking) * .04), Colors.transparent]).createShader(sphere);
+    canvas.drawCircle(c, r, _additive); _additive.shader = null;
+  }
+
+  void _paintPlasma(Canvas canvas, Offset c, double r, double e) {
+    final s = state; final blobs = s.qualityTier == 0 ? 2 : 4; const points = 36;
+    for (var k = 0; k < blobs; k++) {
+      final base = r * (.34 + k * .11) * (1 + s.bass * .12 + s.thinkPulse * .06);
+      final turbulence = .1 + s.mid * .22 + e * .08; _path.reset();
+      for (var j = 0; j <= points; j++) {
+        final a = j / points * math.pi * 2;
+        final wobble = flowNoise(a * (1.4 + k * .3) + k * 2.1, s.orbitPhase * (1.2 + k * .25));
+        final rr = base * (1 + turbulence * wobble * .5);
+        final p = Offset(c.dx + math.cos(a) * rr, c.dy + math.sin(a) * rr * .96);
+        j == 0 ? _path.moveTo(p.dx, p.dy) : _path.lineTo(p.dx, p.dy);
+      }
+      _path.close();
+      final u = s.tint(.12 + k * .22);
+      _additive.shader = RadialGradient(center: Alignment(math.sin(s.orbitPhase * .7 + k) * .25, math.cos(s.orbitPhase * .5 + k) * .25), colors: [NexusPalette.spectralColor(u, .10 + e * .14), NexusPalette.spectralColor(u, .02 + e * .03), Colors.transparent], stops: const [0, .6, 1]).createShader(Rect.fromCircle(center: c, radius: base * 1.3));
+      canvas.drawPath(_path, _additive);
+    }
+    _additive.shader = null;
+  }
+
+  void _paintFilaments(Canvas canvas, Offset c, double r, double e) {
+    final s = state; final count = switch (s.qualityTier) { 0 => 5, 1 => 8, _ => 11 }; _path.reset();
+    for (var i = 0; i < count; i++) {
+      final dir = i.isEven ? 1 : -1; final a = i / count * math.pi * 2 + s.orbitPhase * .35 * dir;
+      final bend = flowNoise(i * 1.3, s.orbitPhase * .9) * (.7 + s.treble * .9);
+      final reach = r * (.62 + .3 * (.5 + .5 * math.sin(s.time * 1.3 + i)) + s.treble * .12);
+      final start = c + Offset(math.cos(a), math.sin(a)) * (r * .14);
+      final end = c + Offset(math.cos(a + bend * .5), math.sin(a + bend * .5)) * reach;
+      final control = c + Offset(math.cos(a + bend), math.sin(a + bend)) * (reach * .62);
+      _path..moveTo(start.dx, start.dy)..quadraticBezierTo(control.dx, control.dy, end.dx, end.dy);
+    }
+    _stroke..blendMode = BlendMode.plus..shader = null..strokeWidth = .55 + s.treble * .5..color = const Color(0xFFBFF6FF).withValues(alpha: .06 + s.treble * .28 + e * .08);
+    canvas.drawPath(_path, _stroke);
+  }
+
+  void _paintCore(Canvas canvas, Offset c, double r, double e) {
+    final s = state;
+    final coreR = r * (.2 + e * .06 + s.thinkPulse * .035 + s.bass * .03);
+    _fill..blendMode = BlendMode.plus..shader = null..color = s.accent.withValues(alpha: .28 + e * .32)..maskFilter = MaskFilter.blur(BlurStyle.normal, coreR * (.9 + e * .6));
+    canvas.drawCircle(c, coreR * 1.25, _fill);
+    _fill..maskFilter = null..blendMode = BlendMode.srcOver..shader = RadialGradient(center: const Alignment(-.38, -.42), radius: .95, colors: [Colors.white.withValues(alpha: .95), Color.lerp(NexusPalette.cyan, Colors.white, .35)!.withValues(alpha: .9), NexusPalette.violet.withValues(alpha: .85), NexusPalette.magenta.withValues(alpha: .55)], stops: const [0, .3, .78, 1]).createShader(Rect.fromCircle(center: c, radius: coreR));
+    canvas.drawCircle(c, coreR, _fill); _fill.shader = null;
+    _fill.color = Colors.white.withValues(alpha: .75);
+    canvas.drawCircle(c + Offset(-coreR * .36, -coreR * .42), coreR * .16, _fill);
+  }
+
+  void _paintGlassmorphicOverlay(Canvas canvas, Offset c, double r, Rect sphere, double e) {
+    final s = state; final glow = s.ambience;
+    _fill..blendMode = BlendMode.srcOver..shader = RadialGradient(center: const Alignment(-.15, -.20), colors: [Colors.white.withValues(alpha: .04 + glow * .03), s.accent.withValues(alpha: .03 + e * .03), NexusPalette.deepNavy.withValues(alpha: .10), NexusPalette.ink.withValues(alpha: .16)], stops: const [0, .35, .75, 1]).createShader(sphere);
+    canvas.drawCircle(c, r, _fill); _fill.shader = null;
+    final shimX = c.dx + math.cos(s.time * 0.62) * r * 0.22; final shimY = c.dy + math.sin(s.time * 0.48) * r * 0.16;
+    _additive.shader = RadialGradient(center: Alignment((shimX - c.dx) / r, (shimY - c.dy) / r), radius: 0.65, colors: [s.accent.withValues(alpha: .06 + e * .10 + glow * .04), Colors.transparent]).createShader(sphere);
+    canvas.drawCircle(c, r, _additive); _additive.shader = null;
+    final shim2X = c.dx + math.cos(s.time * 0.38 + math.pi) * r * 0.18; final shim2Y = c.dy + math.sin(s.time * 0.55 + math.pi) * r * 0.20;
+    _additive.shader = RadialGradient(center: Alignment((shim2X - c.dx) / r, (shim2Y - c.dy) / r), radius: 0.50, colors: [NexusPalette.violet.withValues(alpha: .04 + e * .07), Colors.transparent]).createShader(sphere);
+    canvas.drawCircle(c, r, _additive); _additive.shader = null;
+    final sheenRect = Rect.fromLTWH(sphere.left, sphere.top, sphere.width, sphere.height * 0.52);
+    _fill..blendMode = BlendMode.srcOver..shader = LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.white.withValues(alpha: .055 + glow * .035), Colors.white.withValues(alpha: 0)]).createShader(sheenRect);
+    canvas.drawCircle(c, r, _fill); _fill.shader = null;
+  }
+
+  void _paintOrbitalRings(Canvas canvas, Offset c, double r, Rect sphere, double e) {
+    final s = state; const ringCount = 6;
+    for (int ring = 0; ring < ringCount; ring++) {
+      final ringScale = 1.0 + (ring + 1) * 0.22;
+      final ringFade = math.pow(1.0 - ring / ringCount, 1.6).toDouble();
+      final rotDir = ring.isEven ? 1.0 : -1.0; final rotSpeed = 0.28 + ring * 0.052;
+      final ringPhase = s.orbitPhase * rotSpeed * rotDir + ring * 1.05;
+      final ellipseY = (0.32 - ring * 0.028).clamp(0.06, 0.36);
+      final strokeW = (1.5 - ring * 0.17).clamp(0.22, 1.5);
+      final uA = ring / ringCount; final uB = (ring + 0.6) / ringCount;
+      canvas.save(); canvas.translate(c.dx, c.dy); canvas.rotate(ringPhase); canvas.scale(1.0, ellipseY);
+      _stroke..blendMode = BlendMode.srcOver..strokeWidth = strokeW..shader = SweepGradient(colors: [NexusPalette.spectralColor(uA, (.40 + e * .32) * ringFade), NexusPalette.spectralColor(uB, (.22 + e * .18) * ringFade), Colors.transparent, Colors.transparent, NexusPalette.spectralColor(uB, (.18 + e * .14) * ringFade), NexusPalette.spectralColor(uA, (.40 + e * .32) * ringFade)], stops: const [0.0, 0.20, 0.38, 0.62, 0.80, 1.0], transform: GradientRotation(ringPhase * 0.45)).createShader(Rect.fromCircle(center: Offset.zero, radius: r * ringScale));
+      canvas.drawCircle(Offset.zero, r * ringScale, _stroke); _stroke.shader = null;
+      _stroke..blendMode = BlendMode.plus..strokeWidth = strokeW * 0.35..color = NexusPalette.spectralColor(uA, (.28 + e * .22) * ringFade);
+      canvas.drawArc(Rect.fromCircle(center: Offset.zero, radius: r * ringScale), ringPhase * 0.3, math.pi * 0.55, false, _stroke);
+      canvas.restore();
+    }
+  }
+
+  void _paintShell(Canvas canvas, Offset c, double r, Rect sphere, double e) {
+    final s = state; final glow = s.ambience;
+    _fill..blendMode = BlendMode.srcOver..shader = RadialGradient(colors: [Colors.transparent, Colors.white.withValues(alpha: .018 + glow * .022), s.accent.withValues(alpha: .08 + e * .07)], stops: const [.72, .93, 1]).createShader(sphere);
+    canvas.drawCircle(c, r, _fill); _fill.shader = null;
+    _stroke..blendMode = BlendMode.srcOver..strokeWidth = 1.0 + e * .4..shader = SweepGradient(transform: GradientRotation(s.orbitPhase * .4), colors: [NexusPalette.cyan.withValues(alpha: .38 + e * .28), NexusPalette.violet.withValues(alpha: .14 + e * .16), NexusPalette.pink.withValues(alpha: .28 + e * .26), NexusPalette.orange.withValues(alpha: .16 + e * .16), NexusPalette.cyan.withValues(alpha: .38 + e * .28)]).createShader(sphere);
+    canvas.drawCircle(c, r, _stroke); _stroke.shader = null;
+    canvas.save(); canvas.translate(c.dx - r * .36, c.dy - r * .5); canvas.rotate(-.55);
+    final highlight = Rect.fromCenter(center: Offset.zero, width: r * .78, height: r * .3);
+    _fill.shader = RadialGradient(colors: [Colors.white.withValues(alpha: .18 + glow * .12), Colors.white.withValues(alpha: 0)]).createShader(highlight);
+    canvas.drawOval(highlight, _fill); _fill.shader = null; canvas.restore();
+    canvas.save(); canvas.translate(c.dx + r * .32, c.dy - r * .38); canvas.rotate(.3);
+    final sparkle = Rect.fromCenter(center: Offset.zero, width: r * .30, height: r * .12);
+    _fill.shader = RadialGradient(colors: [Colors.white.withValues(alpha: .10 + glow * .08), Colors.white.withValues(alpha: 0)]).createShader(sparkle);
+    canvas.drawOval(sparkle, _fill); _fill.shader = null; canvas.restore();
+    _stroke..strokeWidth = 1.3..color = Colors.white.withValues(alpha: .06 + glow * .13 + e * .04)..blendMode = BlendMode.srcOver;
+    canvas.drawArc(Rect.fromCircle(center: c, radius: r * .88), .15, 1.05, false, _stroke);
+  }
+
+  @override
+  bool shouldRepaint(OrbEnergyFieldPainter old) => old.layout != layout;
+}

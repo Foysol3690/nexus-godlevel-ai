@@ -1,0 +1,77 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'package:record/record.dart';
+import 'package:flutter/services.dart';
+import '../secure_config_manager.dart';
+import 'safe_log.dart';
+
+class VoiceService {
+  static const _deviceChannel = MethodChannel('com.foysol.jarvis/accessibility_bridge');
+  final AudioRecorder _recorder = AudioRecorder();
+  final SecureConfigManager _config = SecureConfigManager();
+  final Map<String, String> _rejectedProviderKeys = {};
+  bool _recording = false;
+  void Function(double level)? _onLevel;
+  StreamSubscription<Amplitude>? _amplitudeSubscription;
+  String lastDiagnostic = '';
+
+  Future<void> init() async {
+    _deviceChannel.setMethodCallHandler((call) async {
+      if (call.method != 'speechRms') return;
+      final raw = call.arguments; if (raw is! num) return;
+      final level = ((raw.toDouble() + 2) / 14).clamp(0.0, 1.0).toDouble();
+      _onLevel?.call(level);
+    });
+    try { print('[Voice] microphone permission: ${await _recorder.hasPermission()}'); } catch (error) { print('[Voice] init error: $error'); }
+  }
+
+  Future<void> startListening(Function(String) onResult, {void Function(double level)? onLevel}) async {
+    if (_recording) { onResult('__VOICE_BUSY__'); return; }
+    lastDiagnostic = ''; _onLevel = onLevel; String? recordingPath;
+    try {
+      final groqKey = (await _config.getGroqKey())?.trim();
+      final geminiKey = (await _config.getGeminiKey())?.trim();
+      final openAiKey = (await _config.getOpenAIKey())?.trim();
+      final nativeTranscript = await _nativeSpeech();
+      if (nativeTranscript != null && nativeTranscript.isNotEmpty) { lastDiagnostic = 'Android speech recognition succeeded.'; onResult(nativeTranscript); return; }
+      if (_blank(groqKey) && _blank(geminiKey) && _blank(openAiKey)) { lastDiagnostic = 'Android speech recognition was unavailable and no cloud speech key is configured.'; onResult('__NO_STT_KEY__'); return; }
+      if (!await _recorder.hasPermission()) { lastDiagnostic = 'Android microphone permission is not granted.'; onResult('__NO_MIC_PERMISSION__'); return; }
+      recordingPath = '${Directory.systemTemp.path}/maya_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+      _recording = true;
+      await _recorder.start(const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1), path: recordingPath);
+      await _amplitudeSubscription?.cancel();
+      _amplitudeSubscription = _recorder.onAmplitudeChanged(const Duration(milliseconds: 48)).listen((amplitude) { final level = ((amplitude.current + 55) / 45).clamp(0.0, 1.0).toDouble(); _onLevel?.call(level); });
+      await Future.delayed(const Duration(seconds: 5));
+      final path = await _recorder.stop(); _recording = false;
+      if (path == null || path.isEmpty) { lastDiagnostic = 'Recorder returned no audio file.'; onResult('__STT_EMPTY_AUDIO__'); return; }
+      final file = File(path);
+      if (!await file.exists() || await file.length() < 1600) { lastDiagnostic = 'Recorded WAV was empty or incomplete.'; onResult('__STT_EMPTY_AUDIO__'); return; }
+      final transcript = await _transcribe(filePath: path, groqKey: groqKey, geminiKey: geminiKey, openAiKey: openAiKey);
+      onResult(transcript);
+    } on TimeoutException { _recording = false; lastDiagnostic = 'Microphone or provider operation timed out.'; onResult('__STT_TIMEOUT__'); }
+    catch (error) { _recording = false; lastDiagnostic = 'Recorder error: ${_short(error)}'; print('[Voice] $lastDiagnostic'); onResult('__STT_ERROR__'); }
+    finally { await _amplitudeSubscription?.cancel(); _amplitudeSubscription = null; _onLevel = null; _recording = false; if (recordingPath != null) await _deleteTemporary(recordingPath); }
+  }
+
+  Future<String> _transcribe({required String filePath, String? groqKey, String? geminiKey, String? openAiKey}) async {
+    final attempts = <_SttAttempt>[];
+    try {
+      if (!_blank(groqKey) && _providerAllowed('Groq', groqKey!)) { final result = await _openAiCompatible(filePath: filePath, apiKey: groqKey, endpoint: Uri.parse('https://api.groq.com/openai/v1/audio/transcriptions'), model: 'whisper-large-v3-turbo', provider: 'Groq'); if (result.text != null) return result.text!; if (result.code == 'auth') _rejectProviderKey('Groq', groqKey); attempts.add(result); }
+      if (!_blank(geminiKey) && _providerAllowed('Gemini STT', geminiKey!)) { final result = await _geminiTranscription(filePath, geminiKey); if (result.text != null) return result.text!; if (result.code == 'auth') _rejectProviderKey('Gemini STT', geminiKey); attempts.add(result); }
+      if (!_blank(openAiKey) && _providerAllowed('OpenAI', openAiKey!)) { final result = await _openAiCompatible(filePath: filePath, apiKey: openAiKey, endpoint: Uri.parse('https://api.openai.com/v1/audio/transcriptions'), model: 'whisper-1', provider: 'OpenAI'); if (result.text != null) return result.text!; if (result.code == 'auth') _rejectProviderKey('OpenAI', openAiKey); attempts.add(result); }
+      lastDiagnostic = attempts.map((item) => item.detail).join(' • '); print('[Voice] all STT paths failed: $lastDiagnostic');
+      final codes = attempts.map((item) => item.code).toSet();
+      if (codes.contains('auth')) return '__STT_AUTH__'; if (codes.contains('rate')) return '__STT_RATE_LIMIT__'; if (codes.contains('timeout')) return '__STT_TIMEOUT__'; if (codes.contains('network')) return '__STT_NETWORK__';
+      if (codes.isNotEmpty && codes.every((code) => code == 'empty')) return '__STT_EMPTY_AUDIO__';
+      return '__STT_ERROR__';
+    } finally { await _deleteTemporary(filePath); }
+  }
+
+  Future<String?> _nativeSpeech() async {
+    try { final text = await _deviceChannel.invokeMethod<String>('recognizeSpeech').timeout(const Duration(seconds: 14)); return text?.trim(); }
+    on PlatformException catch (error) { print('[Voice] native speech fallback: ${error.code} ${error.message ?? ''}'); return null; }
+    on TimeoutException { print('[Voice] native speech timeout'); return null; }
+    catch (error) { print('[Voice] native speech error: ${_short(error)}'); return null; }
+  }

@@ -1,0 +1,55 @@
+  Future<Map<String, dynamic>> stop() async {
+    final state = await _read();
+    if (state.isEmpty) return status();
+    state['status'] = 'stopped'; state['transportConnected'] = false; state['stoppedAt'] = DateTime.now().toUtc().toIso8601String();
+    await _write(state); return {'success': true, ..._publicState(state)};
+  }
+
+  Future<Map<String, dynamic>> _postUnsigned(Uri uri, String pin, Map<String, dynamic> payload) async => _request(uri, pin, jsonEncode(payload), const {});
+
+  Future<Map<String, dynamic>> _postSigned(Uri uri, {required String pin, required String token, required String clientId, required Map<String, dynamic> payload}) async {
+    if (pin.length != 64 || token.isEmpty || clientId.isEmpty) return {'success': false, 'error': 'Companion authentication is invalid.'};
+    final body = jsonEncode(payload);
+    final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+    final nonce = _randomHex(16);
+    final signed = '$timestamp\n$nonce\n$body';
+    final signature = Hmac(sha256, utf8.encode(token)).convert(utf8.encode(signed)).toString();
+    return _request(uri, pin, body, {'X-Maya-Client': clientId, 'X-Maya-Timestamp': '$timestamp', 'X-Maya-Nonce': nonce, 'X-Maya-Signature': signature});
+  }
+
+  Future<Map<String, dynamic>> _request(Uri uri, String pin, String body, Map<String, String> headers) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    var certificateObserved = false;
+    client.badCertificateCallback = (certificate, host, port) { certificateObserved = true; final observed = sha256.convert(certificate.der).toString(); return observed == pin; };
+    try {
+      final request = await client.postUrl(uri).timeout(const Duration(seconds: 8));
+      request.headers.contentType = ContentType.json; headers.forEach(request.headers.set); request.write(body);
+      final response = await request.close().timeout(const Duration(minutes: 16));
+      final bytes = await response.fold<List<int>>([], (all, chunk) { if (all.length + chunk.length > 2 * 1024 * 1024) throw const FormatException('Companion response exceeded 2 MB.'); return all..addAll(chunk); });
+      final text = utf8.decode(bytes, allowMalformed: true);
+      dynamic decoded; try { decoded = jsonDecode(text); } catch (_) { decoded = <String, dynamic>{'message': text}; }
+      final map = decoded is Map ? decoded.map((key, value) => MapEntry(key.toString(), value)) : <String, dynamic>{'data': decoded};
+      return {'success': response.statusCode >= 200 && response.statusCode < 300 && map['success'] != false, 'httpStatus': response.statusCode, 'certificatePinned': certificateObserved, ...map};
+    } on HandshakeException { return {'success': false, 'error': 'TLS certificate verification failed. Check the fingerprint.'}; }
+    on SocketException catch (error) { return {'success': false, 'error': 'Companion unavailable: ${error.message}'}; }
+    catch (error) { return {'success': false, 'error': error.toString()}; }
+    finally { client.close(force: true); }
+  }
+
+  static Uri? _endpoint(String value) { final uri = Uri.tryParse(value.trim()); if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) return null; if (!_privateHost(uri.host)) return null; return Uri(scheme: 'https', host: uri.host, port: uri.hasPort ? uri.port : 8765); }
+  static bool _privateHost(String host) {
+    final lower = host.toLowerCase();
+    if (lower == 'localhost' || lower == '127.0.0.1' || lower == '::1') return true;
+    final parts = host.split('.').map(int.tryParse).toList();
+    if (parts.length != 4 || parts.any((part) => part == null)) return false;
+    final a = parts[0]!, b = parts[1]!;
+    return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 169 && b == 254);
+  }
+  static String _origin(Uri uri) => 'https://${uri.host}:${uri.hasPort ? uri.port : 8765}';
+  static String _fingerprint(String value) => value.toLowerCase().replaceAll(RegExp(r'[^a-f0-9]'), '');
+  static String _randomHex(int bytes) => List<int>.generate(bytes, (_) => _random.nextInt(256)).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+  static Map<String, dynamic> _boundedArguments(Map<String, dynamic> input) { final encoded = jsonEncode(input); if (encoded.length > 256 * 1024) throw const FormatException('Companion arguments exceed 256 KB.'); return jsonDecode(encoded) as Map<String, dynamic>; }
+  static Map<String, dynamic> _publicState(Map<String, dynamic> state) { final result = Map<String, dynamic>.from(state); result.remove('token'); return result; }
+  Future<Map<String, dynamic>> _read() async { final raw = await _storage.read(key: _key); if (raw == null || raw.isEmpty) return {}; try { final decoded = jsonDecode(raw); if (decoded is Map) return decoded.map((key, value) => MapEntry(key.toString(), value)); } catch (_) {} return {}; }
+  Future<void> _write(Map<String, dynamic> value) => _storage.write(key: _key, value: jsonEncode(value));
+}
