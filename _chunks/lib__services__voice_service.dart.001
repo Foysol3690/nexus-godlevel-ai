@@ -1,0 +1,69 @@
+  bool _providerAllowed(String provider, String key) => _rejectedProviderKeys[provider] != key;
+  void _rejectProviderKey(String provider, String key) { _rejectedProviderKeys[provider] = key; }
+
+  Future<_SttAttempt> _openAiCompatible({required String filePath, required String apiKey, required Uri endpoint, required String model, required String provider}) async {
+    try {
+      final request = http.MultipartRequest('POST', endpoint)..headers['Authorization'] = 'Bearer $apiKey'..fields['model'] = model..fields['response_format'] = 'json'..files.add(await http.MultipartFile.fromPath('file', filePath, filename: 'maya-command.wav'));
+      final streamed = await request.send().timeout(const Duration(seconds: 22));
+      final response = await http.Response.fromStream(streamed);
+      if (response.statusCode < 200 || response.statusCode >= 300) return _httpFailure(provider, response.statusCode);
+      final decoded = jsonDecode(response.body); final text = decoded is Map ? decoded['text'] : null;
+      if (text is String && text.trim().isNotEmpty) return _SttAttempt.success(text.trim(), provider);
+      return _SttAttempt.failure('empty', '$provider returned no speech text');
+    } on TimeoutException { return _SttAttempt.failure('timeout', '$provider timed out'); }
+    on SocketException { return _SttAttempt.failure('network', '$provider network connection failed'); }
+    on http.ClientException { return _SttAttempt.failure('network', '$provider HTTP connection failed'); }
+    on FormatException { return _SttAttempt.failure('server', '$provider returned invalid JSON'); }
+    catch (error) { return _SttAttempt.failure('server', '$provider error: ${_short(error)}'); }
+  }
+
+  Future<_SttAttempt> _geminiTranscription(String filePath, String apiKey) async {
+    try {
+      final audio = await File(filePath).readAsBytes();
+      const models = ['gemini-3.8-flash', 'gemini-3.1-flash-preview', 'gemini-2.5-flash'];
+      _SttAttempt? lastFailure;
+      for (final model in models) {
+        final endpoint = Uri.https('generativelanguage.googleapis.com', '/v1beta/models/$model:generateContent', {'key': apiKey});
+        final response = await http.post(endpoint, headers: {'Content-Type': 'application/json'}, body: jsonEncode({'contents': [{'parts': [{'text': 'Transcribe this spoken command exactly. Return only the transcript, with no explanation.'}, {'inlineData': {'mimeType': 'audio/wav', 'data': base64Encode(audio)}}]}], 'generationConfig': {'temperature': 0, 'maxOutputTokens': 256}})).timeout(const Duration(seconds: 30));
+        if (response.statusCode < 200 || response.statusCode >= 300) { lastFailure = _httpFailure('Gemini STT $model', response.statusCode); if (lastFailure.code == 'auth') return lastFailure; continue; }
+        final decoded = jsonDecode(response.body); final text = _geminiText(decoded);
+        if (text != null && text.trim().isNotEmpty) return _SttAttempt.success(text.trim(), 'Gemini STT $model');
+        lastFailure = _SttAttempt.failure('empty', 'Gemini STT $model returned no speech text');
+      }
+      return lastFailure ?? _SttAttempt.failure('server', 'All Gemini STT profiles were unavailable');
+    } on TimeoutException { return _SttAttempt.failure('timeout', 'Gemini STT timed out'); }
+    on SocketException { return _SttAttempt.failure('network', 'Gemini STT network connection failed'); }
+    on http.ClientException { return _SttAttempt.failure('network', 'Gemini STT HTTP connection failed'); }
+    on FormatException { return _SttAttempt.failure('server', 'Gemini STT returned invalid JSON'); }
+    catch (error) { return _SttAttempt.failure('server', 'Gemini STT error: ${_short(error)}'); }
+  }
+
+  _SttAttempt _httpFailure(String provider, int status) {
+    if (status == 401 || status == 403) return _SttAttempt.failure('auth', '$provider rejected its API key (HTTP $status)');
+    if (status == 429) return _SttAttempt.failure('rate', '$provider is rate limited (HTTP 429)');
+    if (status >= 500) return _SttAttempt.failure('server', '$provider server failed (HTTP $status)');
+    return _SttAttempt.failure('server', '$provider request failed (HTTP $status)');
+  }
+
+  String? _geminiText(Object? decoded) {
+    if (decoded is! Map || decoded['candidates'] is! List) return null;
+    for (final candidate in decoded['candidates'] as List) { if (candidate is! Map || candidate['content'] is! Map) continue; final parts = candidate['content']['parts']; if (parts is! List) continue; for (final part in parts) { if (part is Map && part['text'] is String) return part['text'] as String; } }
+    return null;
+  }
+
+  Future<void> stopListening() async {
+    _recording = false; await _amplitudeSubscription?.cancel(); _amplitudeSubscription = null; _onLevel = null;
+    try { await _recorder.stop(); } catch (error) { print('[Voice] stop error: $error'); }
+  }
+
+  Future<void> _deleteTemporary(String path) async { try { final file = File(path); if (await file.exists()) await file.delete(); } catch (error) { print('[Voice] temporary-file cleanup warning: $error'); } }
+  static bool _blank(String? value) => value == null || value.isEmpty;
+  static String _short(Object value, [int max = 120]) { final text = MayaSafeLog.redact(value, max: max); return text.length <= max ? text : '${text.substring(0, max)}…'; }
+}
+
+class _SttAttempt {
+  final String? text; final String code, detail;
+  const _SttAttempt._(this.text, this.code, this.detail);
+  factory _SttAttempt.success(String text, String provider) => _SttAttempt._(text, 'ok', '$provider succeeded');
+  factory _SttAttempt.failure(String code, String detail) => _SttAttempt._(null, code, detail);
+}
