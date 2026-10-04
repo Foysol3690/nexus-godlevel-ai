@@ -1,0 +1,121 @@
+import 'dart:math' as math;
+import 'dart:ui';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
+import 'audio_analyzer.dart';
+import 'audio_visual_state.dart';
+import 'nexus_palette.dart';
+
+abstract interface class NexusSimulation { void step(double dt, AudioVisualState state); }
+
+class _PhaseTargets {
+  const _PhaseTargets({required this.orbitSpeed, required this.baseEnergy, required this.micFocus, required this.flowDirection, required this.flowBase, required this.inwardPull, required this.ambience, required this.thinkPulse, required this.spectrumFocus, required this.spectrumCenter, required this.accent});
+  final double orbitSpeed, baseEnergy, micFocus, flowDirection, flowBase, inwardPull, ambience, thinkPulse, spectrumFocus, spectrumCenter;
+  final Color accent;
+}
+
+const _targets = <NexusPhase, _PhaseTargets>{
+  NexusPhase.idle: _PhaseTargets(orbitSpeed: .32, baseEnergy: .06, micFocus: .34, flowDirection: 0, flowBase: .05, inwardPull: 0, ambience: .08, thinkPulse: .15, spectrumFocus: 0, spectrumCenter: .45, accent: Color(0xFF4E7BFF)),
+  NexusPhase.listening: _PhaseTargets(orbitSpeed: .62, baseEnergy: .16, micFocus: 1, flowDirection: 1, flowBase: .32, inwardPull: .18, ambience: .32, thinkPulse: 0, spectrumFocus: .22, spectrumCenter: .12, accent: NexusPalette.cyan),
+  NexusPhase.processing: _PhaseTargets(orbitSpeed: 1.15, baseEnergy: .44, micFocus: .42, flowDirection: .35, flowBase: .22, inwardPull: .85, ambience: .48, thinkPulse: .25, spectrumFocus: .18, spectrumCenter: .42, accent: NexusPalette.violet),
+  NexusPhase.thinking: _PhaseTargets(orbitSpeed: .48, baseEnergy: .3, micFocus: .3, flowDirection: 0, flowBase: .08, inwardPull: .4, ambience: .3, thinkPulse: 1, spectrumFocus: .55, spectrumCenter: .3, accent: Color(0xFF6C6BFF)),
+  NexusPhase.speaking: _PhaseTargets(orbitSpeed: .78, baseEnergy: .2, micFocus: .82, flowDirection: -1, flowBase: .3, inwardPull: -.22, ambience: .42, thinkPulse: 0, spectrumFocus: .16, spectrumCenter: .82, accent: Color(0xFFFF7A6B)),
+};
+
+class VisualStateController extends ChangeNotifier {
+  VisualStateController({required TickerProvider vsync, NexusAudioAnalyzer? analyzer}) : _analyzer = analyzer ?? NexusAudioAnalyzer.instance { _ticker = vsync.createTicker(_onTick); }
+  final NexusAudioAnalyzer _analyzer;
+  late final Ticker _ticker;
+  final AudioVisualState state = AudioVisualState();
+  final List<NexusSimulation> _simulations = <NexusSimulation>[];
+  final ValueNotifier<int> qualityTier = ValueNotifier<int>(2);
+  NexusPhase _phase = NexusPhase.idle;
+  double _fallbackLevel = .05;
+  Duration _lastTick = Duration.zero, _lastNotify = Duration.zero;
+  double _orbVelocity = 0, _frameCostMs = 0;
+  int _slowFrames = 0, _fastFrames = 0;
+  bool _timingsAttached = false;
+
+  NexusPhase get phase => _phase;
+  void addSimulation(NexusSimulation simulation) => _simulations.add(simulation);
+  void setPhase(NexusPhase phase) => _phase = phase;
+  set fallbackLevel(double level) => _fallbackLevel = level.clamp(0.0, 1.0).toDouble();
+
+  void start() { if (!_ticker.isActive) _ticker.start(); if (!_timingsAttached) { SchedulerBinding.instance.addTimingsCallback(_onTimings); _timingsAttached = true; } }
+
+  void _onTick(Duration elapsed) {
+    final dt = ((elapsed - _lastTick).inMicroseconds / 1e6).clamp(0.0, .05); _lastTick = elapsed;
+    if (dt <= 0) return; _advance(dt);
+    final minGapUs = state.qualityTier == 0 ? 30000 : 0;
+    if ((elapsed - _lastNotify).inMicroseconds >= minGapUs) { _lastNotify = elapsed; notifyListeners(); }
+  }
+
+  void _advance(double dt) {
+    final s = state; s.time += dt; _blendWeights(dt); final w = s.weights;
+    double blend(double Function(_PhaseTargets t) pick) { var value = 0.0; for (final phase in NexusPhase.values) value += pick(_targets[phase]!) * w[phase.index]; return value; }
+    final orbitSpeed = blend((t) => t.orbitSpeed); final baseEnergy = blend((t) => t.baseEnergy);
+    s.micFocus = blend((t) => t.micFocus); s.inwardPull = blend((t) => t.inwardPull); s.spectrumFocus = blend((t) => t.spectrumFocus); s.spectrumCenter = blend((t) => t.spectrumCenter);
+    final flowBase = blend((t) => t.flowBase); final targetDirection = blend((t) => t.flowDirection); final pulseWeight = blend((t) => t.thinkPulse);
+    var r = 0.0, g = 0.0, b = 0.0;
+    for (final phase in NexusPhase.values) { final c = _targets[phase]!.accent; final k = w[phase.index]; r += c.r * k; g += c.g * k; b += c.b * k; }
+    s.accent = Color.from(alpha: 1, red: r, green: g, blue: b);
+    _sampleAudio(dt);
+    final audioDrive = w[NexusPhase.listening.index] + w[NexusPhase.speaking.index];
+    final amp = s.amplitude * audioDrive;
+    s.thinkPulse = pulseWeight * (.5 + .5 * math.sin(s.time * 2.1)) * (.6 + .4 * math.sin(s.time * .7));
+    final orbTarget = baseEnergy + amp * .78 + s.bass * audioDrive * .12 + s.thinkPulse * .14;
+    const stiffness = 120.0, damping = 15.0;
+    _orbVelocity += ((orbTarget - s.orbEnergy) * stiffness - _orbVelocity * damping) * dt;
+    s.orbEnergy = (s.orbEnergy + _orbVelocity * dt).clamp(0.0, 1.25);
+    s.waveEnergy = _approach(s.waveEnergy, .018 + s.micFocus * .03 + amp * .95, amp > s.waveEnergy ? 22 : 7, dt);
+    s.particleEnergy = _approach(s.particleEnergy, baseEnergy * .8 + amp * .6 + s.treble * audioDrive * .35, 9, dt);
+    s.flowStrength = _approach(s.flowStrength, flowBase + amp * .85, amp > s.flowStrength ? 14 : 4, dt);
+    s.flowDirection = _approach(s.flowDirection, targetDirection, 3.2, dt);
+    s.ambience = _approach(s.ambience, blend((t) => t.ambience) * .7 + s.orbEnergy * .3, 3, dt);
+    s.orbitPhase += dt * orbitSpeed * (1 + s.particleEnergy * .6 + s.bass * audioDrive * .4);
+    s.flowTravel += dt * s.flowDirection * (.22 + s.flowStrength * .9);
+    for (final sim in _simulations) sim.step(dt, s);
+  }
+
+  void _blendWeights(double dt) {
+    final w = state.weights; final k = 1 - math.exp(-dt * 3.4); var sum = 0.0;
+    for (var i = 0; i < w.length; i++) { final target = i == _phase.index ? 1.0 : 0.0; w[i] += (target - w[i]) * k; sum += w[i]; }
+    if (sum > 0) { for (var i = 0; i < w.length; i++) w[i] /= sum; }
+  }
+
+  void _sampleAudio(double dt) {
+    final s = state; final now = _analyzer.nowUs;
+    final listening = s.weight(NexusPhase.listening); final speaking = s.weight(NexusPhase.speaking);
+    AudioSpectrumFrame? frame;
+    if (_phase == NexusPhase.speaking) frame = _analyzer.outputAt(now);
+    else if (_phase == NexusPhase.listening) frame = _analyzer.inputAt(now);
+    else _analyzer.outputAt(now);
+    double amplitude, bass, mid, treble;
+    if (frame != null) { amplitude = frame.amplitude; bass = frame.bass; mid = frame.mid; treble = frame.treble; }
+    else if (listening + speaking > .05) {
+      var level = _fallbackLevel;
+      if (_phase == NexusPhase.speaking) { final syllable = .5 + .5 * math.sin(s.time * 2 * math.pi * 3.6) * math.sin(s.time * 2 * math.pi * .9 + 1); level *= .45 + .55 * syllable; }
+      amplitude = level; bass = level * .9; mid = level * .78; treble = level * .5;
+    } else { amplitude = bass = mid = treble = 0; }
+    s.amplitude = _approach(s.amplitude, amplitude, amplitude > s.amplitude ? 26 : 8, dt);
+    s.bass = _approach(s.bass, bass, bass > s.bass ? 14 : 5, dt);
+    s.mid = _approach(s.mid, mid, mid > s.mid ? 20 : 7, dt);
+    s.treble = _approach(s.treble, treble, treble > s.treble ? 30 : 10, dt);
+  }
+
+  static double _approach(double current, double target, double rate, double dt) => current + (target - current) * (1 - math.exp(-dt * rate));
+
+  void _onTimings(List<FrameTiming> timings) {
+    for (final timing in timings) {
+      final cost = math.max(timing.buildDuration.inMicroseconds, timing.rasterDuration.inMicroseconds) / 1000;
+      _frameCostMs = _frameCostMs * .9 + cost * .1;
+      if (_frameCostMs > 15) { _slowFrames++; _fastFrames = 0; } else if (_frameCostMs < 8) { _fastFrames++; _slowFrames = 0; }
+    }
+    var tier = state.qualityTier;
+    if (_slowFrames > 45 && tier > 0) { tier--; _slowFrames = 0; } else if (_fastFrames > 240 && tier < 2) { tier++; _fastFrames = 0; }
+    if (tier != state.qualityTier) { state.qualityTier = tier; qualityTier.value = tier; }
+  }
+
+  @override
+  void dispose() { if (_timingsAttached) SchedulerBinding.instance.removeTimingsCallback(_onTimings); _ticker.dispose(); qualityTier.dispose(); super.dispose(); }
+}

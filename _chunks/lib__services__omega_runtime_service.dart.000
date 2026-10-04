@@ -1,0 +1,88 @@
+import 'dart:async';
+import '../models/maya_capability.dart';
+import 'futuristic_core_service.dart';
+import 'maya_settings_service.dart';
+import 'omega_persistence_service.dart';
+import 'omega_graph_memory_service.dart';
+import 'omega_proactive_service.dart';
+import 'omega_resource_service.dart';
+import 'omega_architecture_service.dart';
+
+enum MayaOmegaMode { observe, suggest, confirm, execute, automate }
+enum MayaOmegaEventKind { runtimeStarted, worldStateChanged, toolRequested, toolCompleted, taskStarted, taskCompleted, taskFailed, emergencyStopped, runtimeResumed }
+
+class MayaOmegaEvent {
+  final String id; final MayaOmegaEventKind kind; final DateTime at; final Map<String, dynamic> payload;
+  const MayaOmegaEvent({required this.id, required this.kind, required this.at, required this.payload});
+  Map<String, dynamic> toJson() => {'id': id, 'kind': kind.name, 'at': at.toUtc().toIso8601String(), 'payload': payload};
+}
+
+class MayaOmegaGuardDecision {
+  final bool allowed, confirmationRequired; final String? reason;
+  const MayaOmegaGuardDecision._({required this.allowed, required this.confirmationRequired, this.reason});
+  const MayaOmegaGuardDecision.allow() : this._(allowed: true, confirmationRequired: false);
+  const MayaOmegaGuardDecision.confirm(String reason) : this._(allowed: true, confirmationRequired: true, reason: reason);
+  const MayaOmegaGuardDecision.block(String reason) : this._(allowed: false, confirmationRequired: false, reason: reason);
+  Map<String, dynamic> toResult() => {'success': false, if (!allowed) 'guardianBlocked': true, if (confirmationRequired) 'authenticationRequired': true, 'error': reason ?? 'MAYA Guardian denied this action.'};
+}
+
+class MayaOmegaRuntime {
+  MayaOmegaRuntime({FuturisticCoreService? core, MayaSettingsService? settings, MayaOmegaArchitectureService? architecture, MayaOmegaPersistenceService? persistence, MayaOmegaResourceService? resources, MayaOmegaGraphMemoryService? graphMemory, MayaOmegaProactiveService? proactive})
+      : core = core ?? FuturisticCoreService(), settings = settings ?? MayaSettingsService(), architecture = architecture ?? MayaOmegaArchitectureService(), persistence = persistence ?? MayaOmegaPersistenceService.instance, resources = resources ?? MayaOmegaResourceService(), graphMemory = graphMemory ?? MayaOmegaGraphMemoryService.instance, proactive = proactive ?? MayaOmegaProactiveService();
+  final FuturisticCoreService core; final MayaSettingsService settings; final MayaOmegaArchitectureService architecture;
+  final MayaOmegaPersistenceService persistence; final MayaOmegaResourceService resources;
+  final MayaOmegaGraphMemoryService graphMemory; final MayaOmegaProactiveService proactive;
+  final StreamController<MayaOmegaEvent> _eventController = StreamController<MayaOmegaEvent>.broadcast();
+  final List<MayaOmegaEvent> _recentEvents = <MayaOmegaEvent>[];
+  final Map<String, MayaCapability> _capabilities = <String, MayaCapability>{};
+  final Map<String, dynamic> _worldState = <String, dynamic>{};
+  MayaOmegaMode _mode = MayaOmegaMode.confirm; bool _started = false, _halted = false; String? _activeTaskId;
+  Stream<MayaOmegaEvent> get events => _eventController.stream;
+  bool get isHalted => _halted; MayaOmegaMode get mode => _mode;
+
+  Future<void> start() async {
+    if (_started) return; await settings.load();
+    _mode = _modeFromSettings(await settings.get<String>('focusMode', 'adaptive'));
+    for (final capability in mayaCapabilities) _capabilities[_capabilityId(capability.title)] = capability;
+    _started = true; _emit(MayaOmegaEventKind.runtimeStarted, {'mode': _mode.name, 'capabilityCount': _capabilities.length});
+  }
+
+  Future<void> observeWorldState(Map<String, dynamic> state) async {
+    await start(); _worldState.addAll(_redactMap(state));
+    try { await persistence.recordResourceSnapshot(_worldState); } catch (_) {}
+    _emit(MayaOmegaEventKind.worldStateChanged, {'state': Map<String, dynamic>.from(_worldState)});
+  }
+
+  Future<MayaOmegaGuardDecision> guardTool(String tool) async {
+    await start();
+    if (_halted && tool != 'system_health' && tool != 'omega_status') return const MayaOmegaGuardDecision.block('MAYA emergency stop is active. Resume Owner Mode before acting.');
+    if (await core.blockedBySafeMode(tool)) return const MayaOmegaGuardDecision.block('Safe Mode blocked this non-low-risk action.');
+    if (await core.requiresConfirmation(tool)) return MayaOmegaGuardDecision.confirm('Fresh authentication is required for this high-risk action.');
+    return const MayaOmegaGuardDecision.allow();
+  }
+
+  Future<void> beforeTool(String tool, Map<String, dynamic> arguments) async { await start(); _emit(MayaOmegaEventKind.toolRequested, {'tool': tool, 'arguments': _redactMap(arguments)}); }
+
+  Future<void> afterTool(String tool, Map<String, dynamic> result, {required int durationMs}) async {
+    await start(); _emit(MayaOmegaEventKind.toolCompleted, {'tool': tool, 'success': result['success'] == true, 'confirmationRequired': result['confirmationRequired'] == true, 'durationMs': durationMs, 'result': _redactMap(result)});
+    if (result['success'] != true && result['confirmationRequired'] != true) {
+      final failure = architecture.classifyFailure(result['error']?.toString() ?? 'Tool failure');
+      await architecture.recordLesson(type: failure['type']?.toString() ?? 'tool_failure', summary: 'Tool "$tool" did not complete successfully.', recovered: false, strategy: failure['recovery']?.toString() ?? 'Inspect the failure, choose a bounded fallback, and verify again.');
+    }
+  }
+
+  Future<String> beginTask(String goal, {String expectedResult = ''}) async {
+    await start();
+    final graph = await architecture.createTaskGraph(goal, expectedResult: expectedResult);
+    final taskId = graph.id; _activeTaskId = taskId;
+    await architecture.advanceTaskNode(taskId, 'perceive', MayaOmegaTaskStatus.running);
+    _emit(MayaOmegaEventKind.taskStarted, {'taskId': taskId, 'goal': goal.trim(), 'expectedResult': expectedResult.trim()});
+    return taskId;
+  }
+
+  Future<void> completeTask({required String taskId, required bool success, String message = ''}) async {
+    await start(); if (_activeTaskId == taskId) _activeTaskId = null;
+    await architecture.finishTaskGraph(taskId, success: success, message: message);
+    if (!success) await architecture.recordLesson(type: 'task_failure', summary: message.isEmpty ? 'A MAYA task failed.' : message, recovered: false, strategy: 'Classify the failure before retrying.');
+    _emit(success ? MayaOmegaEventKind.taskCompleted : MayaOmegaEventKind.taskFailed, {'taskId': taskId, 'success': success, 'message': message.trim()});
+  }
