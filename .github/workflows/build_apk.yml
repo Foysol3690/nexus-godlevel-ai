@@ -1,0 +1,57 @@
+name: Build Flutter APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Assemble chunked source files
+      run: |
+        if [ -f _chunks/assemble.py ]; then
+          python3 _chunks/assemble.py
+          echo "Assembly complete"
+        else
+          echo "No chunks to assemble"
+        fi
+
+    - name: Set up Java 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.32.2'
+        channel: 'stable'
+        cache: true
+
+    - name: Flutter pub get
+      run: flutter pub get
+
+    - name: Build release APK
+      run: flutter build apk --release --target-platform android-arm64
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nexus-godlevel-ai-release
+        path: build/app/outputs/flutter-apk/app-release.apk
+        retention-days: 30
+
+    - name: Print APK size
+      run: |
+        APK=build/app/outputs/flutter-apk/app-release.apk
+        if [ -f "$APK" ]; then
+          SIZE=$(du -h "$APK" | cut -f1)
+          echo "✅ APK built successfully! Size: $SIZE"
+        fi
