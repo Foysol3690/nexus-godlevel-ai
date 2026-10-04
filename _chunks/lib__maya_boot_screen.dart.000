@@ -1,0 +1,119 @@
+import 'dart:math' as math;
+import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/material.dart';
+import 'jarvis_orb.dart';
+
+class MayaBootScreen extends StatefulWidget {
+  final VoidCallback onComplete;
+  const MayaBootScreen({super.key, required this.onComplete});
+  @override State<MayaBootScreen> createState() => _MayaBootScreenState();
+}
+
+class _MayaBootScreenState extends State<MayaBootScreen> with SingleTickerProviderStateMixin {
+  static const _red = Color(0xFFFF304F); static const _orange = Color(0xFFFF8A24); static const _cyan = Color(0xFF19E6FF);
+  static const _bootDuration = Duration(milliseconds: 7600);
+  static const _lines = <String>['SOVEREIGN CORE V10', 'REACTIVE AUDIO REACTOR', 'COGNITIVE MESH ONLINE', 'ENCRYPTED PROVIDER VAULT', 'DEVICE CONTROL LATTICE', 'PREDICTIVE VOICE CHANNEL'];
+  late final AnimationController _timeline;
+  final AudioPlayer _player = AudioPlayer();
+  bool _finished = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _timeline = AnimationController(vsync: this, duration: _bootDuration, animationBehavior: AnimationBehavior.preserve)..addStatusListener((status) { if (status == AnimationStatus.completed) _finish(); });
+    WidgetsBinding.instance.addPostFrameCallback((_) { if (!mounted) return; _timeline.forward(from: 0); _playBootTheme(); });
+  }
+
+  Future<void> _playBootTheme() async { try { await _player.setReleaseMode(ReleaseMode.stop); await _player.setVolume(.48); await _player.play(AssetSource('audio/maya_v10_boot.wav')); } catch (_) {} }
+  void _finish() { if (_finished) return; _finished = true; widget.onComplete(); }
+
+  @override
+  void dispose() { _player.dispose(); _timeline.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF020408),
+      body: LayoutBuilder(builder: (context, constraints) {
+        final compact = constraints.maxHeight < 720;
+        return Stack(children: [
+          Positioned.fill(child: RepaintBoundary(child: CustomPaint(painter: _BootAtmospherePainter(_timeline)))),
+          SafeArea(child: Padding(padding: EdgeInsets.fromLTRB(20, compact ? 12 : 20, 20, 22), child: Column(children: [
+            _telemetry(),
+            SizedBox(height: compact ? 22 : 42),
+            Expanded(flex: 5, child: Center(child: _animatedIdentity(compact))),
+            SizedBox(height: compact ? 12 : 22),
+            _bootGlass(compact),
+            const Spacer(),
+            _progress(),
+          ]))),
+        ]);
+      }),
+    );
+  }
+
+  Widget _telemetry() => Row(children: [
+    _pill('SYS // AWAKENING', _cyan),
+    Expanded(child: AnimatedBuilder(animation: _timeline, builder: (context, _) => Opacity(opacity: .45 + .4 * math.sin(_timeline.value * math.pi * 8).abs(), child: const FittedBox(fit: BoxFit.scaleDown, child: Text('SECURE LINK', style: TextStyle(color: Colors.white70, fontSize: 8, letterSpacing: 2.2, fontWeight: FontWeight.w700)))))),
+    _pill('GODMODE', _orange),
+  ]);
+
+  Widget _animatedIdentity(bool compact) => AnimatedBuilder(
+    animation: _timeline,
+    builder: (context, _) {
+      final t = Curves.easeOutCubic.transform((_timeline.value / .32).clamp(0, 1));
+      final pulse = .5 + .5 * math.sin(_timeline.value * math.pi * 6);
+      return Opacity(opacity: t, child: Transform.scale(scale: .84 + .16 * t, child: SizedBox(
+        width: compact ? 300 : 340, height: compact ? 210 : 250,
+        child: Stack(alignment: Alignment.center, children: [
+          JarvisOrb(size: compact ? 206 : 238, audioLevel: (.18 + _timeline.value * .72).clamp(0.0, 1.0), listening: true, booting: true, primaryColor: _cyan, coreColor: Colors.white, centerLabel: 'V10'),
+          Container(width: compact ? 190 : 224, height: compact ? 190 : 224, decoration: BoxDecoration(shape: BoxShape.circle, gradient: RadialGradient(colors: [_cyan.withValues(alpha: .13 + pulse * .05), _orange.withValues(alpha: .055), Colors.transparent]), border: Border.all(color: _cyan.withValues(alpha: .24)), boxShadow: [BoxShadow(color: _cyan.withValues(alpha: .09 + pulse * .04), blurRadius: 48, spreadRadius: 8)])),
+          Transform.rotate(angle: _timeline.value * math.pi * 1.6, child: CustomPaint(size: Size.square(compact ? 206 : 242), painter: _ArcRingPainter(progress: _timeline.value))),
+          ShaderMask(blendMode: BlendMode.srcIn, shaderCallback: (bounds) => LinearGradient(begin: Alignment(-1 + _timeline.value * 2, -1), end: Alignment(1 + _timeline.value * 2, 1), colors: const [_red, _orange, Colors.white, _cyan]).createShader(bounds), child: Text('MAYA', style: TextStyle(color: Colors.white, fontSize: compact ? 46 : 56, fontWeight: FontWeight.w900, letterSpacing: 9 - 3 * t, height: 1))),
+        ]),
+      )));
+    },
+  );
+
+  Widget _bootGlass(bool compact) => AnimatedBuilder(
+    animation: _timeline,
+    builder: (context, _) {
+      final visible = ((_timeline.value - .13) / .12).clamp(0.0, 1.0).toDouble();
+      final completed = ((_timeline.value * (_lines.length + 1)).floor()).clamp(0, _lines.length);
+      return Opacity(opacity: visible, child: Transform.translate(offset: Offset(0, 18 * (1 - visible)), child: Container(
+        width: double.infinity, padding: EdgeInsets.all(compact ? 14 : 18),
+        decoration: _glassDecoration(radius: 22, border: Colors.white.withValues(alpha: .16)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [const Text('BOOT MATRIX', style: TextStyle(color: _orange, fontSize: 9, letterSpacing: 2.5, fontWeight: FontWeight.w900)), const Spacer(), Text('${completed.toString().padLeft(2, '0')} / 06', style: const TextStyle(color: Colors.white38, fontFamily: 'MayaMono', fontSize: 8))]),
+          SizedBox(height: compact ? 9 : 13),
+          for (var index = 0; index < _lines.length; index++)
+            AnimatedOpacity(duration: const Duration(milliseconds: 260), opacity: index < completed ? 1 : .18, child: Padding(padding: EdgeInsets.only(bottom: compact ? 5 : 7), child: Row(children: [
+              Container(width: 6, height: 6, decoration: BoxDecoration(shape: BoxShape.circle, color: index < completed ? (index.isEven ? _cyan : _orange) : Colors.white24, boxShadow: index < completed ? [BoxShadow(color: (index.isEven ? _cyan : _orange).withValues(alpha: .45), blurRadius: 7)] : null)),
+              const SizedBox(width: 11),
+              Text(_lines[index], style: TextStyle(color: index < completed ? Colors.white70 : Colors.white24, fontFamily: 'MayaMono', fontSize: compact ? 8 : 9, letterSpacing: 1.3)),
+              const Spacer(),
+              if (index < completed) const Icon(Icons.check_rounded, color: _cyan, size: 13),
+            ]))),
+        ]),
+      )));
+    },
+  );
+
+  Widget _progress() => AnimatedBuilder(animation: _timeline, builder: (context, _) => Column(children: [
+    Row(children: [const Text('NEURAL HANDSHAKE', style: TextStyle(color: Colors.white38, fontSize: 7, letterSpacing: 2.1)), const Spacer(), Text('${(_timeline.value * 100).round()}%', style: const TextStyle(color: _cyan, fontSize: 9, fontWeight: FontWeight.bold))]),
+    const SizedBox(height: 8),
+    ClipRRect(borderRadius: BorderRadius.circular(6), child: LinearProgressIndicator(value: Curves.easeInOutCubic.transform(_timeline.value), minHeight: 3, backgroundColor: Colors.white.withValues(alpha: .07), valueColor: const AlwaysStoppedAnimation(_cyan))),
+  ]));
+
+  BoxDecoration _glassDecoration({required double radius, required Color border}) => BoxDecoration(
+    borderRadius: BorderRadius.circular(radius), border: Border.all(color: border),
+    gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Colors.white.withValues(alpha: .10), Colors.white.withValues(alpha: .025)]),
+    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .30), blurRadius: 28, offset: const Offset(0, 14)), BoxShadow(color: _cyan.withValues(alpha: .025), blurRadius: 18)],
+  );
+
+  Widget _pill(String text, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+    decoration: BoxDecoration(borderRadius: BorderRadius.circular(22), color: color.withValues(alpha: .055), border: Border.all(color: color.withValues(alpha: .30))),
+    child: Text(text, style: TextStyle(color: color, fontSize: 7, letterSpacing: 1.5, fontWeight: FontWeight.w800)),
+  );
+}
