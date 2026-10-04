@@ -1,0 +1,137 @@
+import 'dart:convert';
+import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+class MayaSuperAccessibilityService {
+  static const _channel = MethodChannel('com.foysol.jarvis/accessibility_bridge');
+  static const _storage = FlutterSecureStorage();
+  static const _scriptsKey = 'maya_super_accessibility_scripts_v1';
+  static const _allowedGlobalActions = <int>{1, 2, 3, 4, 5, 6, 8, 9};
+  static const supportedActions = <String>{'tap', 'swipe', 'click_text', 'click_id', 'type_text', 'global_action', 'root_tap', 'root_swipe', 'root_key', 'shizuku_tap', 'shizuku_swipe', 'shizuku_key', 'shizuku_text', 'wait'};
+
+  Future<Map<String, dynamic>> status() async => {'success': true, 'accessibilityEnabled': await _channel.invokeMethod<bool>('isServiceEnabled') ?? false, 'rootBridge': await _invokeMap('rootBridgeStatus'), 'shizuku': await _invokeMap('shizukuStatus'), 'scriptEngine': {'maxScripts': 30, 'maxSteps': 50, 'dryRun': true, 'selectorFirst': true, 'coordinateScaling': true, 'rollbackSteps': true, 'unicodeAccessibilityFallback': true}, 'policy': 'Owner-authorized, visible and audited automation; no arbitrary shell.'};
+
+  Future<Map<String, dynamic>> connectShizuku() async {
+    final permission = await _invokeMap('requestShizukuPermission');
+    if (permission['granted'] != true) return permission;
+    return _invokeMap('startShizukuBridge');
+  }
+
+  Future<Map<String, dynamic>> screenTree() async {
+    try { final raw = await _channel.invokeMethod<dynamic>('getScreenNodeTree'); final decoded = raw is String ? jsonDecode(raw) : raw; return decoded is Map ? decoded.map((key, value) => MapEntry(key.toString(), value)) : {'status': 'error', 'message': 'No Accessibility tree returned.'}; } catch (error) { return {'status': 'error', 'message': error.toString()}; }
+  }
+
+  Future<Map<String, dynamic>> findElements({String text = '', String viewId = '', String role = '', bool clickableOnly = false}) async {
+    final tree = await screenTree(); if (tree['status'] != 'ok') return {'success': false, ...tree};
+    final matches = <Map<String, dynamic>>[];
+    _walk(tree['tree'], matches, text.toLowerCase(), viewId.toLowerCase(), role.toLowerCase(), clickableOnly);
+    return {'success': true, 'packageName': tree['packageName'], 'matches': matches.take(100).toList(), 'matchCount': matches.length};
+  }
+
+  Future<Map<String, dynamic>> recentEvents({int limit = 50}) async {
+    try { final raw = await _channel.invokeListMethod<dynamic>('getAccessibilityEvents', {'limit': limit.clamp(1, 200)}) ?? const []; return {'success': true, 'events': raw.map((item) { try { final decoded = item is String ? jsonDecode(item) : item; return decoded is Map ? decoded.map((key, value) => MapEntry(key.toString(), value)) : <String, dynamic>{}; } catch (_) { return <String, dynamic>{}; } }).where((item) => item.isNotEmpty).toList()}; } catch (error) { return {'success': false, 'error': error.toString()}; }
+  }
+
+  Future<Map<String, dynamic>> saveScript({required String name, required List<dynamic> steps}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty || steps.isEmpty || steps.length > 50) return {'success': false, 'error': 'A script needs a name and 1–50 steps.'};
+    final cleanSteps = <Map<String, dynamic>>[];
+    for (var index = 0; index < steps.length; index++) { final raw = steps[index]; if (raw is! Map) return {'success': false, 'error': 'Every step must be an object.'}; final step = raw.map((key, value) => MapEntry(key.toString(), value)); final validation = validateStep(step); if (validation != null) return {'success': false, 'error': 'Step ${index + 1}: $validation'}; cleanSteps.add(step); }
+    final referenceTree = await screenTree(); final scripts = await _readScripts();
+    final script = {'id': DateTime.now().microsecondsSinceEpoch.toString(), 'name': cleanName, 'steps': cleanSteps, 'referenceScreen': _screenProfile(referenceTree), 'createdAt': DateTime.now().toUtc().toIso8601String()};
+    scripts.insert(0, script); if (scripts.length > 30) scripts.removeRange(30, scripts.length);
+    await _writeScripts(scripts); return {'success': true, 'script': script};
+  }
+
+  Future<Map<String, dynamic>> listScripts() async => {'success': true, 'scripts': await _readScripts()};
+
+  Future<Map<String, dynamic>> replay({required String scriptId, required bool confirmed, bool dryRun = false, bool rollbackOnFailure = true}) async {
+    if (!dryRun && !confirmed) return {'success': false, 'confirmationRequired': true, 'error': 'Fresh confirmation is required.'};
+    if (!dryRun) { final authentication = await _invokeMap('biometricConfirm', {'reason': 'Authorize MAYA automation replay'}); if (authentication['authenticated'] != true) return {'success': false, 'error': 'Authentication was cancelled.'}; }
+    final scripts = await _readScripts(); Map<String, dynamic>? script;
+    for (final candidate in scripts) { if (candidate['id']?.toString() == scriptId) script = candidate; }
+    if (script == null) return {'success': false, 'error': 'Script not found.'};
+    final referenceScreen = script['referenceScreen'] is Map ? (script['referenceScreen'] as Map).map((key, value) => MapEntry(key.toString(), value)) : <String, dynamic>{};
+    final outcomes = <Map<String, dynamic>>[], completed = <Map<String, dynamic>>[];
+    final steps = script['steps'] as List? ?? const [];
+    for (var index = 0; index < steps.length; index++) {
+      final raw = steps[index]; if (raw is! Map) continue;
+      final step = raw.map((key, value) => MapEntry(key.toString(), value));
+      final validation = validateStep(step); if (validation != null) return {'success': false, 'dryRun': dryRun, 'failedStep': index, 'error': validation, 'outcomes': outcomes};
+      final result = dryRun ? <String, dynamic>{'success': true, 'validated': true, 'wouldExecute': step['action']} : await _execute(step, referenceScreen: referenceScreen);
+      var verified = result['success'] == true;
+      final expected = step['expectedText']?.toString().trim() ?? '';
+      if (!dryRun && verified && expected.isNotEmpty) { await Future<void>.delayed(const Duration(milliseconds: 250)); verified = jsonEncode(await screenTree()).toLowerCase().contains(expected.toLowerCase()); }
+      outcomes.add({'index': index, 'action': step['action'], ...result, 'verified': verified});
+      if (!verified) { final rollback = !dryRun && rollbackOnFailure ? await _rollback(completed, referenceScreen: referenceScreen) : <Map<String, dynamic>>[]; return {'success': false, 'dryRun': dryRun, 'failedStep': index, 'outcomes': outcomes, 'rollback': rollback}; }
+      completed.add(step);
+      if (!dryRun) { await Future<void>.delayed(Duration(milliseconds: ((step['delayAfterMs'] as num?)?.toInt() ?? 150).clamp(0, 3000))); }
+    }
+    return {'success': true, 'dryRun': dryRun, 'outcomes': outcomes};
+  }
+
+  Future<Map<String, dynamic>> _execute(Map<String, dynamic> step, {Map<String, dynamic> referenceScreen = const <String, dynamic>{}}) async {
+    final action = step['action']?.toString();
+    if (action == 'tap' || action == 'root_tap' || action == 'shizuku_tap') { final selectorResult = await _trySelector(step); if (selectorResult != null && selectorResult['success'] == true) return {...selectorResult, 'mode': 'selector'}; }
+    final currentScreen = await _currentScreenProfile();
+    int scaledInt(String key, String axis) => _scaled(step[key], axis: axis, referenceScreen: referenceScreen, currentScreen: currentScreen).round();
+    double scaledDouble(String key, String axis) => _scaled(step[key], axis: axis, referenceScreen: referenceScreen, currentScreen: currentScreen);
+    switch (action) {
+      case 'tap': return _bool(await _channel.invokeMethod<bool>('tap', {'x': scaledDouble('x', 'x'), 'y': scaledDouble('y', 'y')}));
+      case 'swipe': return _bool(await _channel.invokeMethod<bool>('dispatchGesture', {'startX': scaledDouble('startX', 'x'), 'startY': scaledDouble('startY', 'y'), 'endX': scaledDouble('endX', 'x'), 'endY': scaledDouble('endY', 'y'), 'duration': (step['durationMs'] as num?)?.toInt() ?? 300}));
+      case 'click_text': return _bool(await _channel.invokeMethod<bool>('clickText', {'text': step['text']?.toString() ?? ''}));
+      case 'click_id': return _bool(await _channel.invokeMethod<bool>('clickId', {'id': step['viewId']?.toString() ?? ''}));
+      case 'type_text': return _bool(await _channel.invokeMethod<bool>('typeText', {'text': step['text']?.toString() ?? ''}));
+      case 'global_action': final code = (step['actionCode'] as num?)?.toInt() ?? 0; if (!_allowedGlobalActions.contains(code)) return {'success': false, 'error': 'Global action $code is not in MAYA\'s allowlist.'}; return _bool(await _channel.invokeMethod<bool>('performGlobalAction', {'action': code}));
+      case 'root_tap': return _invokeMap('rootInputTap', {'x': scaledInt('x', 'x'), 'y': scaledInt('y', 'y'), 'ownerAuthorized': true});
+      case 'root_swipe': return _invokeMap('rootInputSwipe', {'startX': scaledInt('startX', 'x'), 'startY': scaledInt('startY', 'y'), 'endX': scaledInt('endX', 'x'), 'endY': scaledInt('endY', 'y'), 'durationMs': (step['durationMs'] as num?)?.round() ?? 300, 'ownerAuthorized': true});
+      case 'root_key': return _invokeMap('rootKeyEvent', {'keyCode': (step['keyCode'] as num?)?.round() ?? 0, 'ownerAuthorized': true});
+      case 'shizuku_tap': return _invokeMap('shizukuInputTap', {'x': scaledInt('x', 'x'), 'y': scaledInt('y', 'y'), 'ownerAuthorized': true});
+      case 'shizuku_swipe': return _invokeMap('shizukuInputSwipe', {'startX': scaledInt('startX', 'x'), 'startY': scaledInt('startY', 'y'), 'endX': scaledInt('endX', 'x'), 'endY': scaledInt('endY', 'y'), 'durationMs': (step['durationMs'] as num?)?.round() ?? 300, 'ownerAuthorized': true});
+      case 'shizuku_key': return _invokeMap('shizukuKeyEvent', {'keyCode': (step['keyCode'] as num?)?.round() ?? 0, 'ownerAuthorized': true});
+      case 'shizuku_text': final value = step['text']?.toString() ?? ''; if (!_isShellInputSafe(value)) { final fallback = await _channel.invokeMethod<bool>('typeText', {'text': value}); return {..._bool(fallback), 'mode': 'accessibility_unicode_fallback'}; } return _invokeMap('shizukuInputText', {'text': value, 'ownerAuthorized': true});
+      case 'wait': await Future<void>.delayed(Duration(milliseconds: ((step['durationMs'] as num?)?.toInt() ?? 250).clamp(0, 5000))); return {'success': true};
+      default: return {'success': false, 'error': 'Unsupported action: $action'};
+    }
+  }
+
+  static String? validateStep(Map<String, dynamic> step) {
+    final action = step['action']?.toString() ?? '';
+    if (!supportedActions.contains(action)) return 'Unsupported action: $action';
+    bool validCoordinate(String key) { final value = step[key]; final parsed = value is num ? value.toDouble() : double.tryParse('$value'); return parsed != null && parsed.isFinite && parsed >= 0; }
+    if (const {'tap', 'root_tap', 'shizuku_tap'}.contains(action) && (!validCoordinate('x') || !validCoordinate('y'))) return '$action requires non-negative x and y coordinates.';
+    if (const {'swipe', 'root_swipe', 'shizuku_swipe'}.contains(action) && (!validCoordinate('startX') || !validCoordinate('startY') || !validCoordinate('endX') || !validCoordinate('endY'))) return '$action requires valid start and end coordinates.';
+    if (action == 'click_text' && (step['text']?.toString().trim().isEmpty ?? true)) return 'click_text requires visible text.';
+    if (action == 'click_id' && (step['viewId']?.toString().trim().isEmpty ?? true)) return 'click_id requires a view ID.';
+    if (const {'type_text', 'shizuku_text'}.contains(action)) { final text = step['text']?.toString() ?? ''; if (text.isEmpty || text.length > 1000) return '$action requires 1–1000 characters.'; if (text.contains(RegExp(r'[\u0000-\u001F\u007F]'))) return '$action cannot contain control characters.'; }
+    if (const {'root_key', 'shizuku_key'}.contains(action)) { final code = (step['keyCode'] as num?)?.toInt() ?? -1; if (code < 0 || code > 288) return 'Invalid Android key code.'; }
+    if (action == 'global_action') { final code = (step['actionCode'] as num?)?.toInt() ?? -1; if (!_allowedGlobalActions.contains(code)) return 'Global action $code is not allowlisted.'; }
+    if (action == 'wait') { final duration = (step['durationMs'] as num?)?.toInt() ?? 250; if (duration < 0 || duration > 5000) return 'Wait duration must be between 0 and 5000 ms.'; }
+    final rollback = step['rollback'];
+    if (rollback != null) { if (rollback is! Map) return 'rollback must be an action object.'; final clean = rollback.map((key, value) => MapEntry(key.toString(), value)); if (clean.containsKey('rollback')) return 'Nested rollback actions are not allowed.'; final rollbackError = validateStep(clean); if (rollbackError != null) return 'Invalid rollback: $rollbackError'; }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _trySelector(Map<String, dynamic> step) async {
+    final viewId = step['selectorViewId']?.toString().trim() ?? ''; if (viewId.isNotEmpty) { final clicked = await _channel.invokeMethod<bool>('clickId', {'id': viewId}); if (clicked == true) return {'success': true, 'selector': 'viewId'}; }
+    final text = step['selectorText']?.toString().trim() ?? ''; if (text.isNotEmpty) { final clicked = await _channel.invokeMethod<bool>('clickText', {'text': text}); if (clicked == true) return {'success': true, 'selector': 'text'}; }
+    return null;
+  }
+
+  Future<List<Map<String, dynamic>>> _rollback(List<Map<String, dynamic>> completed, {required Map<String, dynamic> referenceScreen}) async {
+    final outcomes = <Map<String, dynamic>>[];
+    for (final step in completed.reversed) { final raw = step['rollback']; if (raw is! Map) continue; final rollback = raw.map((key, value) => MapEntry(key.toString(), value)); final validation = validateStep(rollback); final result = validation == null ? await _execute(rollback, referenceScreen: referenceScreen) : <String, dynamic>{'success': false, 'error': validation}; outcomes.add({'action': rollback['action'], ...result}); }
+    return outcomes;
+  }
+
+  Future<Map<String, dynamic>> _currentScreenProfile() async => _screenProfile(await screenTree());
+  static Map<String, dynamic> _screenProfile(Map<String, dynamic> tree) => {'width': (tree['screenWidth'] as num?)?.toInt() ?? 0, 'height': (tree['screenHeight'] as num?)?.toInt() ?? 0, 'orientation': tree['orientation']?.toString() ?? 'unknown'};
+  static double _scaled(dynamic raw, {required String axis, required Map<String, dynamic> referenceScreen, required Map<String, dynamic> currentScreen}) { final value = _number(raw); final reference = (referenceScreen[axis == 'x' ? 'width' : 'height'] as num?)?.toDouble(); final current = (currentScreen[axis == 'x' ? 'width' : 'height'] as num?)?.toDouble(); if (reference == null || current == null || reference <= 0 || current <= 0) return value; return value * current / reference; }
+  static bool _isShellInputSafe(String value) => value.isNotEmpty && value.length <= 200 && value.codeUnits.every((unit) => unit >= 0x20 && unit <= 0x7E);
+  Future<Map<String, dynamic>> _invokeMap(String method, [Map<String, dynamic>? arguments]) async { try { final raw = await _channel.invokeMethod<dynamic>(method, arguments); return raw is Map ? raw.map((key, value) => MapEntry(key.toString(), value)) : {'success': raw == true}; } catch (error) { return {'success': false, 'error': error.toString()}; } }
+  Future<List<Map<String, dynamic>>> _readScripts() async { final raw = await _storage.read(key: _scriptsKey); if (raw == null || raw.isEmpty) return []; try { final decoded = jsonDecode(raw); return decoded is List ? decoded.whereType<Map>().map((item) => item.map((key, value) => MapEntry(key.toString(), value))).toList() : []; } catch (_) { return []; } }
+  Future<void> _writeScripts(List<Map<String, dynamic>> scripts) => _storage.write(key: _scriptsKey, value: jsonEncode(scripts));
+  static Map<String, dynamic> _bool(bool? value) => {'success': value == true, if (value != true) 'error': 'Android did not complete the action.'};
+  static double _number(dynamic value) => value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+  static void _walk(dynamic raw, List<Map<String, dynamic>> output, String text, String viewId, String role, bool clickableOnly) { if (raw is! Map || output.length >= 100) return; final node = raw.map((key, value) => MapEntry(key.toString(), value)); final label = '${node['text'] ?? ''} ${node['contentDescription'] ?? ''}'.toLowerCase(); final id = node['viewId']?.toString().toLowerCase() ?? ''; final nodeRole = node['className']?.toString().toLowerCase() ?? ''; if ((text.isEmpty || label.contains(text)) && (viewId.isEmpty || id.contains(viewId)) && (role.isEmpty || nodeRole.contains(role)) && (!clickableOnly || node['isClickable'] == true)) { output.add(node); } final children = node['children']; if (children is List) { for (final child in children) { _walk(child, output, text, viewId, role, clickableOnly); } } }
+}
