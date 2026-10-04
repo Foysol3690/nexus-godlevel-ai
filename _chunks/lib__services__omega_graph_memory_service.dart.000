@@ -1,0 +1,78 @@
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
+
+class MayaGraphEntity {
+  final String id;
+  final String type;
+  final String label;
+  final double confidence;
+  final DateTime updatedAt;
+  const MayaGraphEntity({required this.id, required this.type, required this.label, required this.confidence, required this.updatedAt});
+  Map<String, dynamic> toJson() => {'id': id, 'type': type, 'label': label, 'confidence': confidence, 'updatedAt': updatedAt.toUtc().toIso8601String()};
+}
+
+class MayaOmegaGraphMemoryService {
+  MayaOmegaGraphMemoryService._();
+  static final MayaOmegaGraphMemoryService instance = MayaOmegaGraphMemoryService._();
+  Database? _database;
+
+  Future<Database> get database async {
+    final existing = _database;
+    if (existing != null && existing.isOpen) return existing;
+    final directory = await getApplicationDocumentsDirectory();
+    _database = await openDatabase(
+      path.join(directory.path, 'maya_graph_memory_v1.db'), version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE entities (id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL, confidence REAL NOT NULL, updated_at TEXT NOT NULL)
+        ''');
+        await db.execute('''
+          CREATE TABLE edges (from_id TEXT NOT NULL, to_id TEXT NOT NULL, relation TEXT NOT NULL, confidence REAL NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (from_id, to_id, relation))
+        ''');
+        await db.execute('CREATE INDEX entities_label_idx ON entities(label)');
+      },
+    );
+    return _database!;
+  }
+
+  Future<Map<String, dynamic>> upsertEntity({required String id, required String type, required String label, double confidence = 0.5}) async {
+    final cleanId = id.trim(); final cleanLabel = label.trim();
+    if (cleanId.isEmpty || cleanLabel.isEmpty) return {'success': false, 'error': 'Entity id and label are required.'};
+    final db = await database;
+    await db.insert('entities', {
+      'id': cleanId, 'type': type.trim().isEmpty ? 'entity' : type.trim(), 'label': cleanLabel,
+      'confidence': confidence.clamp(0, 1), 'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    return {'success': true, 'entityId': cleanId};
+  }
+
+  Future<Map<String, dynamic>> link({required String fromId, required String toId, required String relation, double confidence = 0.5}) async {
+    if (fromId.trim().isEmpty || toId.trim().isEmpty || relation.trim().isEmpty)
+      return {'success': false, 'error': 'Both entities and relation are required.'};
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    await db.insert('edges', {'from_id': fromId.trim(), 'to_id': toId.trim(), 'relation': relation.trim(), 'confidence': confidence.clamp(0, 1), 'updated_at': now}, conflictAlgorithm: ConflictAlgorithm.replace);
+    return {'success': true};
+  }
+
+  Future<Map<String, dynamic>> search(String query, {int limit = 20}) async {
+    final db = await database;
+    final clean = query.trim();
+    final rows = clean.isEmpty
+        ? await db.query('entities', orderBy: 'confidence DESC, updated_at DESC', limit: limit.clamp(1, 100).toInt())
+        : await db.query('entities', where: 'label LIKE ? OR type LIKE ?', whereArgs: ['%$clean%', '%$clean%'], orderBy: 'confidence DESC, updated_at DESC', limit: limit.clamp(1, 100).toInt());
+    final entities = rows.map((row) => MayaGraphEntity(id: row['id']?.toString() ?? '', type: row['type']?.toString() ?? 'entity', label: row['label']?.toString() ?? '', confidence: (row['confidence'] as num?)?.toDouble() ?? 0.5, updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? '') ?? DateTime.now()).toJson()).toList();
+    return {'success': true, 'entities': entities};
+  }
+
+  Future<Map<String, dynamic>> snapshot({int limit = 100}) async {
+    final db = await database;
+    final entities = await db.query('entities', orderBy: 'updated_at DESC', limit: limit.clamp(1, 200).toInt());
+    final edges = await db.query('edges', orderBy: 'updated_at DESC', limit: limit.clamp(1, 200).toInt());
+    return {'success': true, 'entities': entities, 'edges': edges};
+  }
+
+  Future<void> close() async { final db = _database; _database = null; if (db != null && db.isOpen) await db.close(); }
+}

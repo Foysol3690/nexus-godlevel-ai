@@ -1,0 +1,84 @@
+import 'dart:convert';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'maya_settings_service.dart';
+
+enum MayaRisk { low, medium, high }
+
+class MayaActionRecord {
+  final String tool;
+  final String summary;
+  final bool success;
+  final DateTime time;
+  const MayaActionRecord({required this.tool, required this.summary, required this.success, required this.time});
+  Map<String, dynamic> toJson() => {'tool': tool, 'summary': summary, 'success': success, 'time': time.toIso8601String()};
+}
+
+class FuturisticCoreService {
+  static const _storage = FlutterSecureStorage();
+  static const _ledgerKey = 'maya_v61_action_ledger';
+  final MayaSettingsService settings = MayaSettingsService();
+
+  MayaRisk riskFor(String tool) {
+    if (const {'answer_call','reject_call','lock_screen','request_secure_unlock','confirm_sensitive_text',
+      'confirm_whatsapp_message','confirm_whatsapp_call','confirm_cellular_call','confirm_whatsapp_gallery_share',
+      'write_workspace_file','delete_workspace_file','run_omega_task_graph','patch_workspace_file',
+      'rollback_workspace_file','mesh_approve_pairing','omega_coordinate_agents','save_automation_script',
+      'replay_automation_script','connect_shizuku_bridge'}.contains(tool)) return MayaRisk.high;
+    if (const {'open_app','open_url','click_text','swipe','set_ringer_mode','read_workspace_file',
+      'research_sources','upsert_memory_entity','link_memory_entities','consolidate_omega_memory',
+      'scan_coding_workspace','checkpoint_workspace_file','mesh_pairing_request','clear_dialogue_state',
+      'save_procedure','ingest_workspace_document','create_calendar_event','cancel_calendar_event',
+      'run_maintenance','record_visual_verification','request_screen_share','stop_screen_share',
+      'observe_world_fact','propose_improvement','provider_mark_connected','provider_disconnect',
+      'mesh_begin_handshake','mesh_stop_transport','start_omega_vision_capture','stop_omega_vision_capture',
+      'time_warp_lookup','ingest_scene_graph','configure_gaze_orb','record_gaze_dwell','plan_live_wallpaper',
+      'find_screen_elements','accessibility_event_history','super_accessibility_status'}.contains(tool)) return MayaRisk.medium;
+    return MayaRisk.low;
+  }
+
+  Future<bool> blockedBySafeMode(String tool) async {
+    final safeMode = await settings.get<bool>('safeMode', false);
+    return safeMode && riskFor(tool) != MayaRisk.low;
+  }
+
+  Future<bool> requiresConfirmation(String tool) async {
+    if (const {'answer_call','reject_call','confirm_whatsapp_message','confirm_whatsapp_call',
+        'confirm_cellular_call','confirm_whatsapp_gallery_share'}.contains(tool)) return false;
+    final enabled = await settings.get<bool>('confirmSensitiveActions', true);
+    final privacyShield = await settings.get<bool>('privacyShield', true);
+    return riskFor(tool) == MayaRisk.high && (enabled || privacyShield);
+  }
+
+  Future<void> record(String tool, Map<String, dynamic> result) async {
+    if (!await settings.get<bool>('actionLedger', true)) return;
+    final current = await recentRaw();
+    current.insert(0, MayaActionRecord(
+      tool: tool,
+      summary: (result['error'] ?? result['message'] ?? 'Completed').toString(),
+      success: result['success'] == true,
+      time: DateTime.now().toUtc(),
+    ).toJson());
+    if (current.length > 500) current.removeRange(500, current.length);
+    await _storage.write(key: _ledgerKey, value: jsonEncode(current));
+  }
+
+  Future<List<Map<String, dynamic>>> recentRaw() async {
+    final raw = await _storage.read(key: _ledgerKey);
+    if (raw == null || raw.isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) return decoded.whereType<Map>().map((e) => e.map((k, v) => MapEntry(k.toString(), v))).toList();
+    } catch (_) {}
+    return <Map<String, dynamic>>[];
+  }
+
+  Future<void> clearLedger() => _storage.delete(key: _ledgerKey);
+
+  Future<String> contextCapsule() async {
+    final mode = await settings.get<String>('focusMode', 'adaptive');
+    final privacy = await settings.get<bool>('privacyShield', true);
+    return 'Maya runtime: focus=$mode; privacyShield=$privacy; local time=${DateTime.now().toIso8601String()}. Never invent device state, current news, prices, sent messages, completed actions, or sources.';
+  }
+}

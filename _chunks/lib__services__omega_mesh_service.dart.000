@@ -1,0 +1,100 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+class MayaOmegaMeshService {
+  static const _storage = FlutterSecureStorage();
+  static const _key = 'maya_omega_mesh_nodes_v1';
+  static final Random _random = Random.secure();
+
+  Future<Map<String, dynamic>> createPairingRequest({required String name, required String nodeType}) async {
+    final cleanName = name.trim();
+    if (cleanName.isEmpty) return {'success': false, 'error': 'Node name is empty.'};
+    final code = List.generate(8, (_) => _random.nextInt(10)).join();
+    final now = DateTime.now().toUtc();
+    final request = {
+      'requestId': DateTime.now().microsecondsSinceEpoch.toString(), 'name': cleanName,
+      'nodeType': nodeType.trim().isEmpty ? 'pc' : nodeType.trim(), 'pairingCode': code,
+      'pairingAttempts': 0, 'status': 'pending', 'createdAt': now.toIso8601String(),
+      'expiresAt': now.add(const Duration(minutes: 10)).toIso8601String(), 'transport': 'not_connected',
+    };
+    final nodes = await _read();
+    nodes.insert(0, request);
+    await _write(nodes);
+    return {'success': true, 'requestId': request['requestId'], 'pairingCode': code, 'status': 'pending', 'message': 'Pairing request created. Approve it only on a trusted companion.'};
+  }
+
+  Future<Map<String, dynamic>> approvePairing({required String requestId, required String pairingCode}) async {
+    final nodes = await _read();
+    final index = nodes.indexWhere((node) => node['requestId']?.toString() == requestId);
+    if (index < 0) return {'success': false, 'error': 'Pairing request not found.'};
+    final expiresAt = DateTime.tryParse(nodes[index]['expiresAt']?.toString() ?? '');
+    if (expiresAt == null || DateTime.now().toUtc().isAfter(expiresAt)) {
+      nodes[index]['status'] = 'expired';
+      nodes[index].remove('pairingCode');
+      await _write(nodes);
+      return {'success': false, 'error': 'The pairing code expired.'};
+    }
+    final attempts = (nodes[index]['pairingAttempts'] as num?)?.toInt() ?? 0;
+    if (attempts >= 5) {
+      nodes[index]['status'] = 'locked'; nodes[index].remove('pairingCode');
+      await _write(nodes);
+      return {'success': false, 'error': 'Pairing was locked after too many incorrect attempts.'};
+    }
+    if (nodes[index]['pairingCode']?.toString() != pairingCode.trim()) {
+      nodes[index]['pairingAttempts'] = attempts + 1;
+      await _write(nodes);
+      return {'success': false, 'error': 'Pairing code does not match.'};
+    }
+    nodes[index]['status'] = 'approved'; nodes[index]['transport'] = 'awaiting_companion_handshake';
+    nodes[index]['approvedAt'] = DateTime.now().toUtc().toIso8601String();
+    nodes[index].remove('pairingCode');
+    await _write(nodes);
+    return {'success': true, 'requestId': requestId, 'status': nodes[index]['status'], 'message': 'Pairing metadata approved; encrypted transport is not connected yet.'};
+  }
+
+  Future<Map<String, dynamic>> listNodes() async {
+    final now = DateTime.now().toUtc();
+    final nodes = await _read();
+    var changed = false;
+    for (final node in nodes) {
+      final expiresAt = DateTime.tryParse(node['expiresAt']?.toString() ?? '');
+      if (node['status'] == 'pending' && expiresAt != null && now.isAfter(expiresAt)) {
+        node['status'] = 'expired'; node.remove('pairingCode'); changed = true;
+      }
+    }
+    if (changed) await _write(nodes);
+    return {'success': true, 'nodes': nodes.map(_publicNode).toList()};
+  }
+
+  Future<Map<String, dynamic>> revokeNode(String requestId) async {
+    final id = requestId.trim();
+    if (id.isEmpty) return {'success': false, 'error': 'Node ID is empty.'};
+    final nodes = await _read();
+    final index = nodes.indexWhere((node) => node['requestId']?.toString() == id);
+    if (index < 0) return {'success': false, 'error': 'Node not found.'};
+    nodes[index]['status'] = 'revoked'; nodes[index]['transport'] = 'disconnected';
+    nodes[index]['revokedAt'] = DateTime.now().toUtc().toIso8601String();
+    nodes[index].remove('pairingCode');
+    await _write(nodes);
+    return {'success': true, 'requestId': id, 'status': 'revoked'};
+  }
+
+  static Map<String, dynamic> _publicNode(Map<String, dynamic> node) {
+    final copy = Map<String, dynamic>.from(node); copy.remove('pairingCode'); return copy;
+  }
+
+  Future<List<Map<String, dynamic>>> _read() async {
+    final raw = await _storage.read(key: _key);
+    if (raw == null || raw.isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) return decoded.whereType<Map>().map((item) => item.map((key, value) => MapEntry(key.toString(), value))).toList();
+    } catch (_) {}
+    return <Map<String, dynamic>>[];
+  }
+
+  Future<void> _write(List<Map<String, dynamic>> nodes) =>
+      _storage.write(key: _key, value: jsonEncode(nodes.take(20).toList()));
+}

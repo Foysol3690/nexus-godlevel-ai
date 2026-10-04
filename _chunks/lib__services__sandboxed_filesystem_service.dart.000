@@ -1,0 +1,67 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+
+class SandboxedFilesystemService {
+  Directory? _workspace;
+
+  Future<Directory> workspace() async {
+    final existing = _workspace;
+    if (existing != null) return existing;
+    final documents = await getApplicationDocumentsDirectory();
+    final directory = Directory(path.join(documents.path, 'maya_workspace'));
+    if (!await directory.exists()) await directory.create(recursive: true);
+    _workspace = directory;
+    return directory;
+  }
+
+  Future<Map<String, dynamic>> list(String relativeDirectory) async {
+    try {
+      final directory = await _safePath(relativeDirectory);
+      if (!await directory.exists()) return {'success': false, 'error': 'Workspace directory not found.'};
+      if (directory is! Directory) return {'success': false, 'error': 'Workspace path is not a directory.'};
+      final entries = <Map<String, dynamic>>[];
+      await for (final entity in directory.list(followLinks: false)) {
+        final stat = await entity.stat();
+        entries.add({'path': _relative(entity.path), 'type': stat.type == FileSystemEntityType.directory ? 'directory' : 'file', 'sizeBytes': stat.size, 'modifiedAt': stat.modified.toUtc().toIso8601String()});
+      }
+      entries.sort((a, b) => a['path'].toString().compareTo(b['path'].toString()));
+      return {'success': true, 'root': _relative(directory.path), 'entries': entries};
+    } catch (error) {
+      return {'success': false, 'error': 'Filesystem list failed: $error'};
+    }
+  }
+
+  Future<Map<String, dynamic>> read(String relativePath) async {
+    try {
+      final entity = await _safePath(relativePath);
+      if (entity is! File || !await entity.exists()) return {'success': false, 'error': 'Workspace file not found.'};
+      final contents = await entity.readAsString();
+      return {'success': true, 'path': _relative(entity.path), 'contents': contents, 'bytes': contents.codeUnits.length};
+    } catch (error) {
+      return {'success': false, 'error': 'Filesystem read failed: $error'};
+    }
+  }
+
+  Future<Map<String, dynamic>> write(String relativePath, String contents, {bool overwrite = false}) async {
+    try {
+      final entity = await _safePath(relativePath);
+      if (entity is! File) return {'success': false, 'error': 'Workspace path is not a file.'};
+      if (await entity.exists() && !overwrite) return {'success': false, 'confirmationRequired': true, 'error': 'File already exists. Confirm overwrite explicitly.'};
+      await entity.parent.create(recursive: true);
+      final temporary = File('${entity.path}.maya_tmp');
+      await temporary.writeAsString(contents, flush: true);
+      await temporary.rename(entity.path);
+      final verified = await entity.readAsString();
+      final success = verified == contents;
+      return {'success': success, 'path': _relative(entity.path), 'bytes': contents.codeUnits.length, 'verified': success, if (!success) 'error': 'Read-back verification did not match the write.'};
+    } catch (error) {
+      return {'success': false, 'error': 'Filesystem write failed: $error'};
+    }
+  }
+
+  Future<Map<String, dynamic>> delete(String relativePath, {required bool confirmed}) async {
+    if (!confirmed) {
+      return {'success': false, 'confirmationRequired': true, 'error': 'File deletion requires explicit confirmation.'};
+    }
