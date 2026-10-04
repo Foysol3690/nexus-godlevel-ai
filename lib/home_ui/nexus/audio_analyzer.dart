@@ -1,0 +1,103 @@
+import 'dart:collection';
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+class AudioSpectrumFrame {
+  const AudioSpectrumFrame({required this.amplitude, required this.bass, required this.mid, required this.treble, required this.timestampUs, this.spectral = true});
+  static const silent = AudioSpectrumFrame(amplitude: 0, bass: 0, mid: 0, treble: 0, timestampUs: -1 << 52);
+  final double amplitude, bass, mid, treble;
+  final int timestampUs;
+  final bool spectral;
+}
+
+class _ScheduledFrame {
+  _ScheduledFrame(this.atUs, this.frame);
+  final int atUs;
+  final AudioSpectrumFrame frame;
+}
+
+class NexusAudioAnalyzer {
+  NexusAudioAnalyzer._() {
+    for (var i = 0; i < _fftSize; i++) _window[i] = .5 - .5 * math.cos(2 * math.pi * i / (_fftSize - 1));
+    for (var i = 0; i < _fftSize ~/ 2; i++) { final angle = -2 * math.pi * i / _fftSize; _cos[i] = math.cos(angle); _sin[i] = math.sin(angle); }
+    final bits = (math.log(_fftSize) / math.ln2).round();
+    for (var i = 0; i < _fftSize; i++) { var reversed = 0, value = i; for (var b = 0; b < bits; b++) { reversed = (reversed << 1) | (value & 1); value >>= 1; } _bitReverse[i] = reversed; }
+  }
+  static final NexusAudioAnalyzer instance = NexusAudioAnalyzer._();
+  static const int _fftSize = 256;
+  static const double _windowGain = _fftSize / 2;
+  static const int _inputThrottleUs = 28000, _playbackHopMs = 40, _staleUs = 220000;
+  final Stopwatch _clock = Stopwatch()..start();
+  final Float64List _window = Float64List(_fftSize), _re = Float64List(_fftSize), _im = Float64List(_fftSize), _cos = Float64List(_fftSize ~/ 2), _sin = Float64List(_fftSize ~/ 2);
+  final Int32List _bitReverse = Int32List(_fftSize);
+  AudioSpectrumFrame _input = AudioSpectrumFrame.silent, _output = AudioSpectrumFrame.silent;
+  final ListQueue<_ScheduledFrame> _playback = ListQueue<_ScheduledFrame>();
+  int get nowUs => _clock.elapsedMicroseconds;
+  void ingestMicrophonePcm16(Uint8List bytes, {int sampleRate = 16000}) {
+    final now = nowUs;
+    if (now - _input.timestampUs < _inputThrottleUs) return;
+    final sampleCount = bytes.length >> 1;
+    if (sampleCount < 32) return;
+    final start = math.max(0, sampleCount - _fftSize);
+    _input = _analyse(bytes, start, sampleCount, sampleRate, now);
+  }
+  void ingestPlaybackPcm16(Uint8List bytes, {int sampleRate = 24000, Duration startDelay = Duration.zero}) {
+    final sampleCount = bytes.length >> 1;
+    if (sampleCount < 32) return;
+    final hop = math.max(64, sampleRate * _playbackHopMs ~/ 1000);
+    final baseUs = nowUs + startDelay.inMicroseconds;
+    for (var offset = 0; offset < sampleCount; offset += hop) {
+      final end = math.min(sampleCount, offset + _fftSize);
+      if (end - offset < 32) break;
+      _playback.addLast(_ScheduledFrame(baseUs + offset * 1000000 ~/ sampleRate, _analyse(bytes, offset, end, sampleRate, baseUs + offset * 1000000 ~/ sampleRate)));
+    }
+    while (_playback.length > 600) _playback.removeFirst();
+  }
+  void ingestMicrophoneLevel(double level) {
+    final v = level.clamp(0.0, 1.0).toDouble();
+    _input = AudioSpectrumFrame(amplitude: v, bass: v * .92, mid: v * .8, treble: v * .55, timestampUs: nowUs, spectral: false);
+  }
+  void clearPlayback() { _playback.clear(); _output = AudioSpectrumFrame.silent; }
+  AudioSpectrumFrame? inputAt(int nowUs) => nowUs - _input.timestampUs <= _staleUs ? _input : null;
+  AudioSpectrumFrame? outputAt(int nowUs) {
+    while (_playback.isNotEmpty && _playback.first.atUs <= nowUs) _output = _playback.removeFirst().frame;
+    return nowUs - _output.timestampUs <= _staleUs ? _output : null;
+  }
+  AudioSpectrumFrame _analyse(Uint8List bytes, int start, int end, int sampleRate, int timestampUs) {
+    final data = ByteData.sublistView(bytes);
+    var sumSquares = 0.0;
+    final n = end - start;
+    for (var i = 0; i < _fftSize; i++) {
+      double sample = 0;
+      if (i < n) { sample = data.getInt16((start + i) << 1, Endian.little) / 32768.0; sumSquares += sample * sample; }
+      _re[_bitReverse[i]] = sample * _window[i]; _im[_bitReverse[i]] = 0;
+    }
+    _fft();
+    final rms = math.sqrt(sumSquares / math.max(1, math.min(n, _fftSize)));
+    final amplitude = ((rms - .012) * 7.5).clamp(0.0, 1.0).toDouble();
+    final binHz = sampleRate / _fftSize;
+    return AudioSpectrumFrame(amplitude: amplitude, bass: _band(60, 260, binHz, 0), mid: _band(260, 2200, binHz, 4), treble: _band(2200, 7000, binHz, 10), timestampUs: timestampUs);
+  }
+  double _band(double lowHz, double highHz, double binHz, double tiltDb) {
+    final nyquistBin = _fftSize ~/ 2 - 1;
+    final first = (lowHz / binHz).floor().clamp(1, nyquistBin);
+    final last = (highHz / binHz).ceil().clamp(first, nyquistBin);
+    var power = 0.0;
+    for (var k = first; k <= last; k++) power += _re[k] * _re[k] + _im[k] * _im[k];
+    final magnitude = math.sqrt(power / (last - first + 1)) * 2 / _windowGain;
+    final db = 20 * math.log(magnitude + 1e-7) / math.ln10 + tiltDb;
+    return ((db + 54) / 42).clamp(0.0, 1.0).toDouble();
+  }
+  void _fft() {
+    for (var size = 2; size <= _fftSize; size <<= 1) {
+      final half = size >> 1, step = _fftSize ~/ size;
+      for (var i = 0; i < _fftSize; i += size) {
+        for (var j = 0; j < half; j++) {
+          final k = j * step, a = i + j, b = a + half;
+          final tr = _re[b] * _cos[k] - _im[b] * _sin[k], ti = _re[b] * _sin[k] + _im[b] * _cos[k];
+          _re[b] = _re[a] - tr; _im[b] = _im[a] - ti; _re[a] += tr; _im[a] += ti;
+        }
+      }
+    }
+  }
+}
