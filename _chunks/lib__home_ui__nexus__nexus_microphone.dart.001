@@ -1,0 +1,51 @@
+  _MicRingPainter({required this.state, required Listenable repaint}) : super(repaint: repaint);
+  final AudioVisualState state;
+  static final Paint _ring = Paint()..style = PaintingStyle.stroke..strokeCap = StrokeCap.round;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = state; final c = size.center(Offset.zero); final r = size.shortestSide / 2;
+    final level = (s.amplitude * s.micFocus).clamp(0.0, 1.0);
+    final rect = Rect.fromCircle(center: c, radius: r - .8);
+    _ring..blendMode = BlendMode.srcOver..strokeWidth = 1.2 + level * 2.2..shader = SweepGradient(transform: GradientRotation(s.orbitPhase * .9), colors: [NexusPalette.cyan.withValues(alpha: .5 + s.micFocus * .3), NexusPalette.violet.withValues(alpha: .25 + level * .4), NexusPalette.orange.withValues(alpha: .4 + level * .4), NexusPalette.pink.withValues(alpha: .25 + level * .3), NexusPalette.cyan.withValues(alpha: .5 + s.micFocus * .3)]).createShader(rect);
+    canvas.drawCircle(c, r - .8, _ring);
+    _ring..blendMode = BlendMode.plus..strokeWidth = 1.4;
+    final arcRect = Rect.fromCircle(center: c, radius: r * (1.14 + level * .12));
+    for (var i = 0; i < 3; i++) {
+      final start = s.orbitPhase * (i.isEven ? 1.3 : -1.1) + i * 2.1;
+      canvas.drawArc(arcRect, start, .2 + level * 1.4 + s.bass * s.micFocus * .3, false, _ring);
+    }
+    final dir = s.flowDirection;
+    if (dir.abs() > .1) {
+      _ring.shader = null;
+      for (var k = 0; k < 2; k++) {
+        var p = ((s.flowTravel * 1.6 + k * .5) % 1.0);
+        if (p < 0) p += 1;
+        final progress = dir > 0 ? 1 - p : p;
+        final alpha = (1 - progress) * dir.abs() * (.12 + s.flowStrength * .35);
+        _ring..strokeWidth = .9..color = s.accent.withValues(alpha: alpha.clamp(0.0, 1.0));
+        canvas.drawCircle(c, r * (1.02 + progress * .75), _ring);
+      }
+    }
+    _ring.shader = null;
+  }
+  @override
+  bool shouldRepaint(_MicRingPainter old) => false;
+}
+
+class _MicGlyphPainter extends CustomPainter {
+  const _MicGlyphPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final unit = math.min(size.width, size.height) * .42;
+    final c = size.center(Offset.zero);
+    final stroke = Paint()..color = Colors.white.withValues(alpha: .9)..style = PaintingStyle.stroke..strokeWidth = unit * .1..strokeCap = StrokeCap.round;
+    final capsule = RRect.fromRectAndRadius(Rect.fromCenter(center: c.translate(0, -unit * .2), width: unit * .5, height: unit * .9), Radius.circular(unit * .25));
+    canvas.drawRRect(capsule, stroke);
+    final cradle = Path()..moveTo(c.dx - unit * .45, c.dy - unit * .05)..quadraticBezierTo(c.dx - unit * .45, c.dy + unit * .45, c.dx, c.dy + unit * .45)..quadraticBezierTo(c.dx + unit * .45, c.dy + unit * .45, c.dx + unit * .45, c.dy - unit * .05);
+    canvas.drawPath(cradle, stroke);
+    canvas.drawLine(c.translate(0, unit * .45), c.translate(0, unit * .68), stroke);
+  }
+  @override
+  bool shouldRepaint(_MicGlyphPainter old) => false;
+}

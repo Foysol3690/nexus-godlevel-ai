@@ -1,0 +1,80 @@
+import 'dart:convert';
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'safe_log.dart';
+
+class NeuralMemory {
+  final String id, content, category;
+  final List<String> keywords;
+  final double importance;
+  final int accessCount;
+  final DateTime createdAt, lastAccessedAt;
+  const NeuralMemory({required this.id, required this.content, required this.category, required this.keywords, required this.importance, required this.accessCount, required this.createdAt, required this.lastAccessedAt});
+  Map<String, dynamic> toJson() => {'id': id, 'content': content, 'category': category, 'keywords': keywords, 'importance': importance, 'accessCount': accessCount, 'createdAt': createdAt.toIso8601String(), 'lastAccessedAt': lastAccessedAt.toIso8601String()};
+  static NeuralMemory fromJson(Map<String, dynamic> j) => NeuralMemory(id: j['id'] ?? '', content: j['content'] ?? '', category: j['category'] ?? 'fact', keywords: List<String>.from(j['keywords'] ?? []), importance: (j['importance'] as num?)?.toDouble() ?? 0.5, accessCount: (j['accessCount'] as num?)?.toInt() ?? 0, createdAt: DateTime.tryParse(j['createdAt'] ?? '') ?? DateTime.now(), lastAccessedAt: DateTime.tryParse(j['lastAccessedAt'] ?? '') ?? DateTime.now());
+  NeuralMemory copyWith({int? accessCount, DateTime? lastAccessedAt}) => NeuralMemory(id: id, content: content, category: category, keywords: keywords, importance: importance, accessCount: accessCount ?? this.accessCount, lastAccessedAt: lastAccessedAt ?? this.lastAccessedAt, createdAt: createdAt);
+}
+
+class NeuralMemoryService extends ChangeNotifier {
+  static final NeuralMemoryService _i = NeuralMemoryService._();
+  factory NeuralMemoryService() => _i;
+  NeuralMemoryService._();
+  static const _storage = FlutterSecureStorage();
+  static const _key = 'maya_neural_memory_v1';
+  final List<NeuralMemory> _memories = [];
+  List<NeuralMemory> get all => List.unmodifiable(_memories);
+  int get count => _memories.length;
+
+  Future<void> load() async {
+    try { final raw = await _storage.read(key: _key); if (raw != null) { final list = jsonDecode(raw) as List; _memories..clear()..addAll(list.map((m) => NeuralMemory.fromJson(m as Map<String, dynamic>))); notifyListeners(); } } catch (e) { MayaSafeLog.debug('NeuralMemory', 'Load failed: $e'); }
+  }
+  Future<void> _save() async {
+    try { await _storage.write(key: _key, value: jsonEncode(_memories.map((m) => m.toJson()).toList())); } catch (e) { MayaSafeLog.debug('NeuralMemory', 'Save failed: $e'); }
+  }
+
+  Future<void> store(String content, {String category = 'fact', double importance = 0.5, List<String>? keywords}) async {
+    final kw = keywords ?? _extractKeywords(content);
+    final existing = _findSimilar(content, threshold: 0.75);
+    if (existing != null) { final idx = _memories.indexWhere((m) => m.id == existing.id); if (idx >= 0) _memories[idx] = existing.copyWith(accessCount: existing.accessCount + 1); await _save(); return; }
+    final mem = NeuralMemory(id: DateTime.now().millisecondsSinceEpoch.toString(), content: content, category: category, keywords: kw, importance: importance, accessCount: 0, createdAt: DateTime.now(), lastAccessedAt: DateTime.now());
+    _memories.add(mem);
+    if (_memories.length > 500) { _memories.sort((a, b) => a.importance.compareTo(b.importance)); _memories.removeAt(0); }
+    await _save(); notifyListeners();
+  }
+
+  Future<List<NeuralMemory>> retrieve(String query, {int topN = 5}) async {
+    final qw = _extractKeywords(query);
+    final scored = _memories.map((m) { double score = 0; for (final kw in qw) { if (m.content.toLowerCase().contains(kw)) score += 0.4; if (m.keywords.contains(kw)) score += 0.6; } score *= m.importance; score += m.accessCount * 0.02; return (m, score); }).toList()..sort((a, b) => b.$2.compareTo(a.$2));
+    final results = scored.take(topN).where((s) => s.$2 > 0.01).map((s) => s.$1).toList();
+    for (final r in results) { final idx = _memories.indexWhere((m) => m.id == r.id); if (idx >= 0) _memories[idx] = r.copyWith(accessCount: r.accessCount + 1, lastAccessedAt: DateTime.now()); }
+    if (results.isNotEmpty) await _save();
+    return results;
+  }
+
+  Future<String> buildContext(String query, {int topN = 4}) async {
+    final mems = await retrieve(query, topN: topN);
+    if (mems.isEmpty) return '';
+    return 'Relevant memories:\n${mems.map((m) => '- [${m.category}] ${m.content}').join('\n')}';
+  }
+
+  void learnFromConversation(String userMsg, String aiReply) {
+    if (userMsg.toLowerCase().contains('i like') || userMsg.toLowerCase().contains('i love') || userMsg.toLowerCase().contains('i prefer')) store(userMsg, category: 'preference', importance: 0.7);
+    if (userMsg.toLowerCase().startsWith('my ') || userMsg.toLowerCase().contains('i am') || userMsg.toLowerCase().contains("i'm ")) store(userMsg, category: 'fact', importance: 0.65);
+    if (userMsg.toLowerCase().contains('using') || userMsg.toLowerCase().contains('flutter') || userMsg.toLowerCase().contains('project')) store(userMsg, category: 'context', importance: 0.55);
+  }
+
+  Future<void> delete(String id) async { _memories.removeWhere((m) => m.id == id); await _save(); notifyListeners(); }
+  Future<void> clear() async { _memories.clear(); await _storage.delete(key: _key); notifyListeners(); }
+
+  List<String> _extractKeywords(String text) {
+    final stopWords = {'the','a','an','is','it','to','of','and','or','i','my','me','we','do','did','be','was','are'};
+    return text.toLowerCase().replaceAll(RegExp(r'[^\w\s]'), ' ').split(RegExp(r'\s+')).where((w) => w.length > 3 && !stopWords.contains(w)).toSet().take(8).toList();
+  }
+
+  NeuralMemory? _findSimilar(String content, {double threshold = 0.8}) {
+    final a = _extractKeywords(content).toSet();
+    for (final m in _memories) { final b = m.keywords.toSet(); if (a.isEmpty || b.isEmpty) continue; final intersection = a.intersection(b).length; final union = a.union(b).length; final jaccard = intersection / union; if (jaccard >= threshold) return m; }
+    return null;
+  }
+}
