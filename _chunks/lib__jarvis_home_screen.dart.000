@@ -7,7 +7,6 @@ import 'god_level_chat_panel.dart';
 import 'god_level_dashboard_v2.dart';
 import 'maya_vision_screen.dart';
 import 'config_screen.dart';
-import 'home_ui/nexus/nexus_background.dart';
 import 'services/voice_service.dart';
 import 'services/god_level_ai_service.dart';
 import 'services/tts_service.dart';
@@ -208,8 +207,21 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
       backgroundColor: const Color(0xFF02050A),
       body: Stack(
         children: [
-          // Animated starfield background
-          const NexusBackground(),
+          // Deep space gradient background
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Color(0xFF050B1C),
+                  Color(0xFF030713),
+                  Color(0xFF01030A),
+                ],
+                stops: [0, 0.55, 1],
+              ),
+            ),
+          ),
           SafeArea(
             child: Column(
               children: [
@@ -422,7 +434,7 @@ class _JarvisHomeScreenState extends State<JarvisHomeScreen>
       );
 }
 
-// ─── Glassmorphic Fade Rings ─────────────────────────────────────────────────
+// ─── Glassmorphic Fade Rings ──────────────────────────────────────────────────────
 class _GlowRings extends StatelessWidget {
   final double fadeValue;
   final bool listening;
