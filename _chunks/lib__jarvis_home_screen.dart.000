@@ -1,0 +1,491 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'config_screen.dart';
+import 'god_level_chat_panel.dart';
+import 'god_level_dashboard_v2.dart';
+import 'home_ui/nexus/jarvis_orb.dart';
+import 'home_ui/nexus/nexus_background.dart';
+import 'home_ui/nexus/nexus_glass_layer.dart';
+import 'home_ui/nexus/nexus_microphone.dart';
+import 'home_ui/nexus/nexus_status.dart';
+import 'home_ui/nexus/visual_state_controller.dart';
+import 'maya_vision_screen.dart';
+import 'secure_config_manager.dart';
+import 'services/god_level_ai_service.dart';
+import 'services/voice_service.dart';
+import 'services/tts_service.dart';
+import 'services/memory_service.dart';
+import 'services/emotion_engine_service.dart';
+
+class JarvisHomeScreen extends StatefulWidget {
+  const JarvisHomeScreen({super.key});
+  @override State<JarvisHomeScreen> createState() => _JarvisHomeScreenState();
+}
+
+class _JarvisHomeScreenState extends State<JarvisHomeScreen>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
+
+  // Core services
+  final GodLevelAiService _ai = GodLevelAiService();
+  final VoiceService _voice = VoiceService();
+  final TtsService _tts = TtsService();
+  final MemoryService _memory = MemoryService();
+  final EmotionEngineService _emotion = EmotionEngineService();
+  final SecureConfigManager _config = SecureConfigManager();
+
+  // Visual state
+  late final VisualStateController _visual;
+  late final AnimationController _pulseCtrl;
+  late final AnimationController _breathCtrl;
+  late final AnimationController _glowCtrl;
+  late final Animation<double> _pulseAnim;
+  late final Animation<double> _breathAnim;
+  late final Animation<double> _glowAnim;
+
+  // UI state
+  bool _listening = false;
+  bool _speaking = false;
+  bool _thinking = false;
+  bool _chatOpen = false;
+  bool _dashboardOpen = false;
+  String _statusText = 'MAYA NEXØRA • God Mode Active';
+  String _emotionState = 'neutral';
+  double _energyLevel = 0.7;
+  int _selectedNav = 0;
+  final List<Map<String, dynamic>> _chatHistory = [];
+  Timer? _idleTimer;
+  Timer? _pulseTimer;
+
+  // Orb ring colors cycling
+  static const List<Color> _ringColors = [
+    Color(0xFF00D9FF), Color(0xFF7B2FBE), Color(0xFFFF7A18),
+    Color(0xFF00FF88), Color(0xFFE6223D),
+  ];
+  int _ringColorIdx = 0;
+  Timer? _ringTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _visual = VisualStateController();
+
+    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1800))..repeat(reverse: true);
+    _breathCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 3200))..repeat(reverse: true);
+    _glowCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900))..repeat(reverse: true);
+
+    _pulseAnim = Tween<double>(begin: 0.95, end: 1.05).animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    _breathAnim = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _breathCtrl, curve: Curves.easeInOut));
+    _glowAnim = Tween<double>(begin: 0.4, end: 1.0).animate(CurvedAnimation(parent: _glowCtrl, curve: Curves.easeInOut));
+
+    _ringTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted) setState(() => _ringColorIdx = (_ringColorIdx + 1) % _ringColors.length);
+    });
+
+    unawaited(_initServices());
+    _startIdleTimer();
+  }
+
+  Future<void> _initServices() async {
+    await _tts.init();
+    await _memory.init();
+    await _emotion.init();
+    await _ai.init();
+    if (mounted) {
+      setState(() => _statusText = 'God Level Intelligence Online ✦');
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (mounted) setState(() => _statusText = 'Speak or tap the orb to begin');
+    }
+  }
+
+  void _startIdleTimer() {
+    _idleTimer?.cancel();
+    _idleTimer = Timer(const Duration(seconds: 30), () {
+      if (mounted && !_listening && !_speaking && !_thinking) {
+        setState(() { _statusText = 'Maya is watching over you…'; _energyLevel = 0.4; });
+      }
+    });
+  }
+
+  Future<void> _toggleVoice() async {
+    HapticFeedback.mediumImpact();
+    _startIdleTimer();
+    if (_listening) {
+      await _stopListening();
+    } else {
+      await _startListening();
+    }
+  }
+
+  Future<void> _startListening() async {
+    setState(() { _listening = true; _energyLevel = 1.0; _statusText = 'Listening… speak to Maya'; _emotionState = 'listening'; });
+    try {
+      final transcript = await _voice.listen();
+      if (transcript.isNotEmpty && mounted) {
+        await _handleInput(transcript);
+      } else if (mounted) {
+        setState(() { _listening = false; _statusText = 'Nothing heard • tap orb to try again'; _energyLevel = 0.6; _emotionState = 'neutral'; });
+      }
+    } catch (e) {
+      if (mounted) setState(() { _listening = false; _statusText = 'Voice error: ${e.toString().substring(0, math.min(40, e.toString().length))}'; _energyLevel = 0.5; _emotionState = 'neutral'; });
+    }
+  }
+
+  Future<void> _stopListening() async {
+    await _voice.stopListening();
+    if (mounted) setState(() { _listening = false; _energyLevel = 0.7; _emotionState = 'neutral'; });
+  }
+
+  Future<void> _handleInput(String input) async {
+    if (!mounted) return;
+    setState(() { _listening = false; _thinking = true; _energyLevel = 0.9; _statusText = 'Maya is thinking…'; _emotionState = 'thinking'; _chatHistory.add({'role': 'user', 'text': input}); });
+    try {
+      final response = await _ai.processGodLevelQuery(input, context: _chatHistory.map((m) => '${m["role"]}: ${m["text"]}').join('\n'));
+      if (!mounted) return;
+      setState(() { _thinking = false; _speaking = true; _energyLevel = 1.0; _statusText = 'Maya is responding…'; _emotionState = 'speaking'; _chatHistory.add({'role': 'maya', 'text': response}); });
+      final detectedEmotion = _emotion.detectEmotion(response);
+      setState(() => _emotionState = detectedEmotion);
+      await _tts.speak(response);
+      if (mounted) setState(() { _speaking = false; _energyLevel = 0.7; _statusText = 'Speak or tap the orb'; _emotionState = 'neutral'; });
+    } catch (e) {
+      if (mounted) setState(() { _thinking = false; _speaking = false; _energyLevel = 0.5; _statusText = 'Error: ${e.toString().substring(0, math.min(50, e.toString().length))}'; _emotionState = 'neutral'; });
+    }
+    _startIdleTimer();
+  }
+
+  void _openVision() {
+    HapticFeedback.selectionClick();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MayaVisionScreen()));
+  }
+
+  void _openSettings() {
+    HapticFeedback.selectionClick();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => ConfigScreen(onConfigComplete: () {})));
+  }
+
+  void _openChat() { HapticFeedback.selectionClick(); setState(() => _chatOpen = true); }
+  void _openDashboard() { HapticFeedback.selectionClick(); setState(() => _dashboardOpen = true); }
+
+  Color get _currentRingColor => _ringColors[_ringColorIdx];
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _voice.stopListening();
+      if (mounted) setState(() { _listening = false; _speaking = false; _thinking = false; });
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pulseCtrl.dispose();
+    _breathCtrl.dispose();
+    _glowCtrl.dispose();
+    _idleTimer?.cancel();
+    _pulseTimer?.cancel();
+    _ringTimer?.cancel();
+    _voice.dispose();
+    _tts.stop();
+    _visual.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF02050A),
+      body: Stack(
+        children: [
+          // Animated background
+          const NexusBackground(),
+
+          // Glass overlay
+          AnimatedBuilder(
+            animation: _breathAnim,
+            builder: (_, __) => NexusGlassLayer(breathValue: _breathAnim.value),
+          ),
+
+          // Main content
+          SafeArea(child: _buildMainContent()),
+
+          // Chat panel overlay
+          if (_chatOpen)
+            GodLevelChatPanel(
+              aiService: _ai,
+              ttsService: _tts,
+              initialHistory: _chatHistory,
+              onClose: () => setState(() => _chatOpen = false),
+            ),
+
+          // Dashboard overlay
+          if (_dashboardOpen)
+            GodLevelDashboardV2(
+              aiService: _ai,
+              onClose: () => setState(() => _dashboardOpen = false),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMainContent() {
+    return Column(
+      children: [
+        _buildTopBar(),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildOrbSection(),
+              const SizedBox(height: 24),
+              _buildStatusBar(),
+              const SizedBox(height: 32),
+              _buildActionButtons(),
+            ],
+          ),
+        ),
+        _buildBottomNav(),
+      ],
+    );
+  }
+
+  Widget _buildTopBar() => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+    child: Row(
+      children: [
+        _buildEmotionBadge(),
+        const Spacer(),
+        Text('MAYA NEXØRA', style: TextStyle(color: _currentRingColor, fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 3)),
+        const Spacer(),
+        IconButton(
+          icon: const Icon(Icons.settings_outlined, color: Colors.white54, size: 20),
+          onPressed: _openSettings,
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildEmotionBadge() => AnimatedContainer(
+    duration: const Duration(milliseconds: 500),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: _currentRingColor.withOpacity(0.4), width: 1),
+      color: _currentRingColor.withOpacity(0.08),
+    ),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(width: 6, height: 6, decoration: BoxDecoration(shape: BoxShape.circle, color: _thinking ? Colors.amber : _listening ? Colors.greenAccent : _speaking ? Colors.cyanAccent : Colors.white30)),
+      const SizedBox(width: 5),
+      Text(_emotionState.toUpperCase(), style: TextStyle(color: _currentRingColor.withOpacity(0.8), fontSize: 9, letterSpacing: 1.5)),
+    ]),
+  );
+
+  Widget _buildOrbSection() {
+    return AnimatedBuilder(
+      animation: Listenable.merge([_pulseAnim, _glowAnim]),
+      builder: (_, __) {
+        return GestureDetector(
+          onTap: _toggleVoice,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Outer fade rings
+              ..._buildFadeRings(),
+              // Main orb
+              Transform.scale(
+                scale: _listening ? _pulseAnim.value : 1.0,
+                child: JarvisOrb(
+                  isListening: _listening,
+                  isSpeaking: _speaking,
+                  isThinking: _thinking,
+                  energyLevel: _energyLevel,
+                  ringColor: _currentRingColor,
+                  glowIntensity: _glowAnim.value,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  List<Widget> _buildFadeRings() {
+    const sizes = [220.0, 270.0, 330.0, 400.0];
+    final opacities = [0.25, 0.15, 0.08, 0.04];
+    return List.generate(sizes.length, (i) {
+      return AnimatedBuilder(
+        animation: _breathAnim,
+        builder: (_, __) {
+          final breathOffset = (i % 2 == 0 ? 1 : -1) * _breathAnim.value * 6;
+          return Container(
+            width: sizes[i] + breathOffset,
+            height: sizes[i] + breathOffset,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: _currentRingColor.withOpacity(opacities[i] * _glowAnim.value),
+                width: i == 0 ? 1.5 : 1.0,
+              ),
+              gradient: i == 0 ? RadialGradient(
+                colors: [_currentRingColor.withOpacity(0.05), Colors.transparent],
+              ) : null,
+            ),
+          );
+        },
+      );
+    });
+  }
+
+  Widget _buildStatusBar() => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 32),
+    child: AnimatedSwitcher(
+      duration: const Duration(milliseconds: 500),
+      child: Container(
+        key: ValueKey(_statusText),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(30),
+          color: Colors.white.withOpacity(0.04),
+          border: Border.all(color: Colors.white.withOpacity(0.08)),
+          boxShadow: [BoxShadow(color: _currentRingColor.withOpacity(0.1), blurRadius: 20, spreadRadius: 2)],
+        ),
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          if (_thinking || _listening || _speaking)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: SizedBox(
+                width: 12, height: 12,
+                child: CircularProgressIndicator(strokeWidth: 1.5, color: _currentRingColor),
+              ),
+            ),
+          Flexible(child: Text(_statusText, style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 12, letterSpacing: 0.5), textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis)),
+        ]),
+      ),
+    ),
+  );
+
+  Widget _buildActionButtons() => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 40),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        _actionBtn(Icons.auto_awesome, 'AI Chat', _openChat, const Color(0xFF7B2FBE)),
+        _actionBtn(Icons.remove_red_eye_outlined, 'Vision', _openVision, const Color(0xFF00D9FF)),
+        _actionBtn(Icons.dashboard_outlined, 'Dashboard', _openDashboard, const Color(0xFFFF7A18)),
+        _actionBtn(Icons.memory_outlined, 'Memory', _showMemory, const Color(0xFF00FF88)),
+      ],
+    ),
+  );
+
+  Widget _actionBtn(IconData icon, String label, VoidCallback onTap, Color color) => GestureDetector(
+    onTap: onTap,
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: color.withOpacity(0.1),
+        border: Border.all(color: color.withOpacity(0.3), width: 1),
+        boxShadow: [BoxShadow(color: color.withOpacity(0.15), blurRadius: 12)],
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, color: color, size: 22),
+        const SizedBox(height: 4),
+        Text(label, style: TextStyle(color: color.withOpacity(0.9), fontSize: 9, letterSpacing: 0.5, fontWeight: FontWeight.w600)),
+      ]),
+    ),
+  );
+
+  void _showMemory() {
+    HapticFeedback.selectionClick();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          color: const Color(0xFF0A0C14),
+          border: Border.all(color: const Color(0xFF00FF88).withOpacity(0.2)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.memory_outlined, color: Color(0xFF00FF88), size: 18),
+              const SizedBox(width: 8),
+              const Text('Maya Memory', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close', style: TextStyle(color: Colors.white38))),
+            ]),
+            const SizedBox(height: 12),
+            if (_chatHistory.isEmpty)
+              const Text('No conversation history yet.', style: TextStyle(color: Colors.white38, fontSize: 13))
+            else
+              SizedBox(
+                height: 200,
+                child: ListView.builder(
+                  itemCount: _chatHistory.length,
+                  itemBuilder: (_, i) {
+                    final msg = _chatHistory[i];
+                    final isUser = msg['role'] == 'user';
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Icon(isUser ? Icons.person_outline : Icons.auto_awesome, size: 14, color: isUser ? Colors.white54 : const Color(0xFF00D9FF)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(msg['text'] ?? '', style: TextStyle(color: isUser ? Colors.white70 : Colors.white, fontSize: 12), maxLines: 3, overflow: TextOverflow.ellipsis)),
+                      ]),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() => Container(
+    padding: const EdgeInsets.fromLTRB(24, 10, 24, 16),
+    decoration: BoxDecoration(
+      border: Border(top: BorderSide(color: Colors.white.withOpacity(0.06))),
+      color: const Color(0xFF02050A).withOpacity(0.9),
+    ),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceAround,
+      children: [
+        _navItem(Icons.home_outlined, 'Home', 0),
+        _navItem(Icons.mic_none_outlined, 'Voice', 1, onTap: _toggleVoice),
+        _navItem(Icons.camera_alt_outlined, 'Vision', 2, onTap: _openVision),
+        _navItem(Icons.tune_outlined, 'Settings', 3, onTap: _openSettings),
+      ],
+    ),
+  );
+
+  Widget _navItem(IconData icon, String label, int idx, {VoidCallback? onTap}) {
+    final selected = _selectedNav == idx;
+    return GestureDetector(
+      onTap: () { setState(() => _selectedNav = idx); (onTap ?? () {})(); },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: selected ? _currentRingColor.withOpacity(0.12) : Colors.transparent,
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: selected ? _currentRingColor : Colors.white38, size: 22),
+          const SizedBox(height: 2),
+          Text(label, style: TextStyle(color: selected ? _currentRingColor : Colors.white30, fontSize: 9, fontWeight: selected ? FontWeight.w700 : FontWeight.w400)),
+        ]),
+      ),
+    );
+  }
+}
