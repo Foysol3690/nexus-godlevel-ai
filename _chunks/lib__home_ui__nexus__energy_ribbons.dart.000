@@ -1,0 +1,101 @@
+import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart';
+import 'audio_visual_state.dart';
+import 'glow_mesh.dart';
+import 'nexus_layout.dart';
+import 'nexus_palette.dart';
+import 'visual_state_controller.dart';
+
+enum NexusDepthLayer { back, front }
+
+class _RibbonSpec {
+  _RibbonSpec.main(math.Random rng) : filament = false, radius = .9 + rng.nextDouble() * .2, tilt = .45 + rng.nextDouble() * .8, tiltWobble = .1 + rng.nextDouble() * .2, yaw = rng.nextDouble() * math.pi * 2, spin = (rng.nextBool() ? 1 : -1) * (.22 + rng.nextDouble() * .4), phase = rng.nextDouble() * math.pi * 2, headSpeed = .5 + rng.nextDouble() * .8, squircle = .06 + rng.nextDouble() * .06, twist = .1 + rng.nextDouble() * .14, hueShift = (rng.nextDouble() - .5) * .1, brightness = .75 + rng.nextDouble() * .25;
+  _RibbonSpec.filamentOf(_RibbonSpec parent, math.Random rng) : filament = true, radius = parent.radius * (1 + (rng.nextDouble() - .5) * .14), tilt = parent.tilt + (rng.nextDouble() - .5) * .22, tiltWobble = parent.tiltWobble, yaw = parent.yaw + (rng.nextDouble() - .5) * .3, spin = parent.spin * (.92 + rng.nextDouble() * .16), phase = parent.phase + (rng.nextDouble() - .5) * .6, headSpeed = parent.headSpeed * (.85 + rng.nextDouble() * .3), squircle = parent.squircle + (rng.nextDouble() - .5) * .03, twist = parent.twist + (rng.nextDouble() - .5) * .06, hueShift = parent.hueShift + (rng.nextDouble() - .5) * .08, brightness = .28 + rng.nextDouble() * .22;
+
+  final bool filament;
+  final double radius, tilt, tiltWobble, yaw, spin, phase, headSpeed, squircle, twist, hueShift, brightness;
+}
+
+class RibbonField implements NexusSimulation {
+  RibbonField({int seed = 11}) {
+    final rng = math.Random(seed);
+    for (var i = 0; i < maxMain; i++) _specs.add(_RibbonSpec.main(rng));
+    for (var i = 0; i < maxFilaments; i++) _specs.add(_RibbonSpec.filamentOf(_specs[i % maxMain], rng));
+    final total = _specs.length * maxSamples;
+    xs = Float32List(total); ys = Float32List(total); zs = Float32List(total); glow = Float32List(total); hue = Float32List(total);
+  }
+
+  static const int maxMain = 5, maxFilaments = 10, maxSamples = 72;
+  final List<_RibbonSpec> _specs = <_RibbonSpec>[];
+  late final Float32List xs, ys, zs, glow, hue;
+  int samples = maxSamples, mainCount = maxMain, filamentCount = maxFilaments;
+
+  bool isFilament(int ribbon) => _specs[ribbon].filament;
+  double brightnessOf(int ribbon) => _specs[ribbon].brightness;
+
+  Iterable<int> get active sync* { for (var i = 0; i < mainCount; i++) yield i; for (var i = 0; i < filamentCount; i++) yield maxMain + i; }
+
+  @override
+  void step(double dt, AudioVisualState s) {
+    switch (s.qualityTier) { case 0: samples = 40; mainCount = 3; filamentCount = 3; case 1: samples = 56; mainCount = 4; filamentCount = 6; default: samples = maxSamples; mainCount = maxMain; filamentCount = maxFilaments; }
+    final t = s.orbitPhase; final thinking = s.weight(NexusPhase.thinking);
+    final contraction = 1 - s.inwardPull.clamp(0.0, 1.0) * .06 - thinking * .05 + s.thinkPulse * .035;
+    final breathing = 1 + s.bass * .07 + s.orbEnergy * .05; final deform = .028 + s.mid * .1 + s.orbEnergy * .03;
+
+    for (final ribbon in active) {
+      final spec = _specs[ribbon];
+      final tilt = spec.tilt + math.sin(t * .31 + spec.phase) * spec.tiltWobble;
+      final yaw = spec.yaw + t * .17 * spec.spin; final spin = spec.phase + t * spec.spin;
+      final ct = math.cos(tilt), st = math.sin(tilt), cy = math.cos(yaw), sy = math.sin(yaw), cs = math.cos(spin), ss = math.sin(spin);
+      final head = spec.phase + t * spec.headSpeed * (spec.spin > 0 ? 1 : -1); final base = ribbon * maxSamples;
+      for (var j = 0; j < samples; j++) {
+        final theta = j / samples * math.pi * 2;
+        final lobes = math.sin(theta + t * .7 + spec.phase) * .6 + math.sin(2 * theta - t * 1.05 + spec.phase * 1.7) * .4;
+        final r = spec.radius * contraction * breathing * (1 + spec.squircle * math.cos(4 * theta + spec.phase) + deform * lobes);
+        var x = r * math.cos(theta), y = r * math.sin(theta), z = spec.twist * math.sin(2 * theta + t * .6 + spec.phase);
+        final y1 = y * ct - z * st; final z1 = y * st + z * ct;
+        final x2 = x * cy + z1 * sy; final z2 = -x * sy + z1 * cy;
+        x = x2 * cs - y1 * ss; y = x2 * ss + y1 * cs; z = z2;
+        final perspective = 1 / (1 - z * .16); final px = x * perspective; final py = y * perspective * .94;
+        final i = base + j; xs[i] = px; ys[i] = py; zs[i] = z;
+        final d = math.cos(theta - head); final comet = math.pow(.5 + .5 * d, 2.6).toDouble();
+        glow[i] = .22 + .78 * comet; hue[i] = NexusPalette.angleToSpectrum(math.atan2(py, px)) + spec.hueShift;
+      }
+    }
+  }
+}
+
+class EnergyRibbonsPainter extends CustomPainter {
+  EnergyRibbonsPainter({required this.field, required this.state, required this.layout, required this.layer, required Listenable repaint}) : super(repaint: repaint);
+  final RibbonField field; final AudioVisualState state; final NexusLayout layout; final NexusDepthLayer layer;
+  static final GlowMesh _backMesh = GlowMesh(5200), _frontMesh = GlowMesh(5200);
+  static final StrandScratch _scratch = StrandScratch(RibbonField.maxSamples);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = state; final mesh = layer == NexusDepthLayer.back ? _backMesh : _frontMesh; mesh.reset();
+    final cx = layout.orbCenter.dx, cy = layout.orbCenter.dy, R = layout.orbRadius, scale = R / 120;
+    final n = field.samples; final energy = s.orbEnergy.clamp(0.0, 1.0);
+    final xs = _scratch.xs, ys = _scratch.ys, ws = _scratch.widths, cs = _scratch.colors;
+    for (final ribbon in field.active) {
+      final filament = field.isFilament(ribbon); final brightness = field.brightnessOf(ribbon); final base = ribbon * RibbonField.maxSamples;
+      var visible = false;
+      for (var j = 0; j < n; j++) {
+        final i = base + j; final z = field.zs[i]; final front = smoothstep(-.1, .1, z); final layerWeight = layer == NexusDepthLayer.front ? front : 1 - front;
+        final depth = .5 + .5 * ((z + 1) / 2).clamp(0.0, 1.0);
+        final alpha = field.glow[i] * brightness * layerWeight * depth * (.3 + .7 * energy + s.ambience * .15);
+        if (alpha > .01) visible = true;
+        xs[j] = cx + field.xs[i] * R; ys[j] = cy + field.ys[i] * R;
+        cs[j] = NexusPalette.spectral(s.tint(field.hue[i]), alpha * (filament ? .9 : .55));
+        ws[j] = (filament ? 1.1 + energy * .8 : 4.2 + energy * 5.5 + field.glow[i] * 2) * scale;
+      }
+      if (!visible) continue;
+      mesh.addStrand(xs, ys, ws, cs, n, closed: true);
+      if (!filament) { for (var j = 0; j < n; j++) { final c = cs[j]; final a = ((c >>> 24) * 1.7).clamp(0, 255).toInt(); cs[j] = (a << 24) | (c & 0x00FFFFFF); ws[j] = (.95 + energy * .7) * scale; } mesh.addStrand(xs, ys, ws, cs, n, closed: true); }
+    }
+    mesh.draw(canvas);
+  }
+  @override
+  bool shouldRepaint(EnergyRibbonsPainter old) => old.layout != layout || old.layer != layer;
+}

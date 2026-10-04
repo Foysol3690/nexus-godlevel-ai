@@ -1,0 +1,49 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart';
+import 'audio_visual_state.dart';
+import 'energy_conduit.dart';
+import 'energy_ribbons.dart';
+import 'nexus_layout.dart';
+import 'nexus_palette.dart';
+import 'visual_state_controller.dart';
+
+class ParticleField implements NexusSimulation {
+  ParticleField({int seed = 29}) : _rng = math.Random(seed) { for (var i = 0; i < maxOrbit; i++) _spawnOrbit(i, initial: true); for (var i = 0; i < maxStream; i++) _spawnStream(i, 1, initial: true); }
+
+  static const int maxOrbit = 150, maxStream = 72;
+  final math.Random _rng;
+  final Float32List oTheta = Float32List(maxOrbit), oRadius = Float32List(maxOrbit), oIncl = Float32List(maxOrbit), oNode = Float32List(maxOrbit), oSpeed = Float32List(maxOrbit), oSize = Float32List(maxOrbit), oLife = Float32List(maxOrbit), oLifeRate = Float32List(maxOrbit), oSpark = Float32List(maxOrbit);
+  final Float32List sT = Float32List(maxStream), sLateral = Float32List(maxStream), sSpeed = Float32List(maxStream), sSize = Float32List(maxStream), sLife = Float32List(maxStream), sLifeRate = Float32List(maxStream), sStrand = Float32List(maxStream);
+  int orbitCount = maxOrbit, streamCount = maxStream;
+
+  double _r(double a, double b) => a + _rng.nextDouble() * (b - a);
+
+  void _spawnOrbit(int i, {bool initial = false, double? radius}) {
+    oTheta[i] = _r(0, math.pi * 2); oRadius[i] = radius ?? _r(.55, 1.55); oIncl[i] = _r(.4, 1.35); oNode[i] = _r(0, math.pi * 2);
+    oSpeed[i] = (_rng.nextBool() ? 1 : -1) * _r(.12, .55); oSize[i] = _r(.7, 1.9); oLife[i] = initial ? _r(0, 1) : 0; oLifeRate[i] = _r(.12, .4); oSpark[i] = _rng.nextDouble() < .22 ? 1 : 0;
+  }
+
+  void _spawnStream(int i, double direction, {bool initial = false}) {
+    sT[i] = initial ? _r(0, 1) : direction >= 0 ? _r(0, .05) : _r(.95, 1);
+    sLateral[i] = _r(-1, 1); sSpeed[i] = _r(.55, 1.25); sSize[i] = _r(.8, 2.1); sLife[i] = initial ? _r(0, 1) : 0; sLifeRate[i] = _r(.35, .8); sStrand[i] = (_rng.nextInt(3) - 1).toDouble();
+  }
+
+  @override
+  void step(double dt, AudioVisualState s) {
+    orbitCount = switch (s.qualityTier) { 0 => 56, 1 => 96, _ => maxOrbit };
+    streamCount = switch (s.qualityTier) { 0 => 26, 1 => 44, _ => maxStream };
+    final speedScale = .55 + s.particleEnergy * 1.5 + s.orbEnergy * .3;
+    for (var i = 0; i < orbitCount; i++) {
+      oTheta[i] += dt * oSpeed[i] * speedScale;
+      final drift = flowNoise(i * .37, s.time * .5) * .04;
+      oRadius[i] += dt * (drift - s.inwardPull * .42 * oRadius[i]);
+      oLife[i] += dt * oLifeRate[i] * (.7 + s.particleEnergy);
+      if (oLife[i] >= 1) _spawnOrbit(i);
+      else if (oRadius[i] < .32) _spawnOrbit(i, radius: _r(1.2, 1.6));
+      else if (oRadius[i] > 1.75) _spawnOrbit(i, radius: _r(.55, .8));
+    }
+    final dir = s.flowDirection; final flowSpeed = .2 + s.flowStrength * 1.3;
+    for (var i = 0; i < streamCount; i++) {
