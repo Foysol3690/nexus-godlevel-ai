@@ -39,10 +39,10 @@ class VisualStateController extends ChangeNotifier {
 
   NexusLayout? get layout => _layout;
 
-  set layout(NexusLayout value) {
+  set layout(NexusLayout? value) {
     if (_layout == value) return;
     _layout = value;
-    particles.resize(value);
+    if (value != null) particles.resize(value);
   }
 
   Future<void> loadShader() async {
