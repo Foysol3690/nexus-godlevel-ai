@@ -1,0 +1,20 @@
+{
+  "name": "Flutter Universal",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "features": {
+    "ghcr.io/devcontainers/features/java:1": { "version": "17", "installMaven": false },
+    "ghcr.io/devcontainers/features/common-utils:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["Dart-Code.dart-code", "Dart-Code.flutter", "kilocode.kilo-code", "ms-vscode.cpptools"]
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/opt/flutter/bin",
+    "ANDROID_HOME": "/home/codespace/android-sdk",
+    "ANDROID_SDK_ROOT": "/home/codespace/android-sdk",
+    "CHROME_EXECUTABLE": "/usr/bin/google-chrome-stable"
+  }
+}
